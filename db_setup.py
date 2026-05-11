@@ -19,7 +19,7 @@ from pymongo.collection import Collection
 
 MONGODB_ATLAS_URI = os.getenv(
     "MONGODB_ATLAS_URI",
-    "mongodb+srv://<username>:<password>@<cluster-url>/?retryWrites=true&w=majority",
+    "mongodb+srv://cristilazea18_db_user:LxzlTh2icfYXmX0u@cluster0.9ymxjsn.mongodb.net/?appName=Cluster0",
 )
 DB_NAME = "acme_financial_dw"
 
