@@ -37,6 +37,9 @@
 - FastAPI backend implemented in `src/app/main.py`.
 - MongoDB startup/shutdown lifecycle uses `MONGO_URI` / `MONGODB_ATLAS_URI` and `MONGO_DB_NAME` / `DB_NAME`.
 - Mongo documents are serialized safely for JSON responses, including `_id`.
+- Missing assets, data sources, and time-series queries return 404 with clear details.
+- Invalid Q5 query parameters return 400 with clear details.
+- API can be run locally with: `uvicorn app.main:app --app-dir src --reload`.
 
 ### Required endpoints
 - [x] Q1: List all available assets (`assetId` list, active rows only)
@@ -50,6 +53,13 @@
 - API tests cover Q1-Q5 happy paths, not-found responses, Q5 date filtering, and validation errors.
 - Latest run: `.venv/bin/python -m pytest` passed with 18 tests.
 - Latest run: `.venv/bin/python -m ruff check .` passed.
+- Live API startup verified against MongoDB Atlas via `uvicorn`.
+- Live endpoint checks returned:
+  - `/assets`: `AMZN`, `BTC`, `ETH`, `ROS2CQA3C829`, `TSLA`, `XAG`, `XPT`
+  - `/assets/TSLA`: latest active TSLA metadata
+  - `/data-sources`: registered source IDs including `alpha_vantage_api_v1` and `metals_dev_v1`
+  - `/data-sources/alpha_vantage_api_v1`: Alpha Vantage provider details
+  - `/time-series?assetId=TSLA&dataSourceId=alpha_vantage_api_v1`: 100 rows sorted ascending by `timestamp`
 
 ---
 
