@@ -11,17 +11,18 @@ from __future__ import annotations
 
 import os
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
+from dotenv import load_dotenv
 from pymongo import MongoClient
 from pymongo.collection import Collection
 
+_ENV_FILE = Path(__file__).resolve().parent / ".env"
+load_dotenv(_ENV_FILE)
 
-MONGODB_ATLAS_URI = os.getenv(
-    "MONGODB_ATLAS_URI",
-    "mongodb+srv://cristilazea18_db_user:LxzlTh2icfYXmX0u@cluster0.9ymxjsn.mongodb.net/?appName=Cluster0",
-)
-DB_NAME = "acme_financial_dw"
+MONGODB_ATLAS_URI = (os.getenv("MONGO_URI") or os.getenv("MONGODB_ATLAS_URI") or "").strip()
+DB_NAME = (os.getenv("MONGO_DB_NAME") or os.getenv("DB_NAME") or "acme_financial_dw").strip()
 
 
 def now_utc_iso() -> str:
@@ -271,6 +272,8 @@ def seed_data(db) -> None:
 
 
 def main() -> None:
+    if not MONGODB_ATLAS_URI:
+        raise RuntimeError("Missing MONGO_URI or MONGODB_ATLAS_URI in environment.")
     client = MongoClient(MONGODB_ATLAS_URI, appname="acme-financial-dw-setup")
     db = client[DB_NAME]
 

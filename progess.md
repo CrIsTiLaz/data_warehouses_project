@@ -2,7 +2,7 @@
 
 ## Overall Status
 - [x] UC1: Data Ingest
-- [ ] UC2: REST API for Data Access (Q1-Q5)
+- [x] UC2: REST API for Data Access (Q1-Q5)
 - [ ] UC3: Analytics & Data Mining
 - [ ] UC4: LLM-Powered Assistant (MCP)
 - [ ] Deliverables (report, IIAGen statement, demo video)
@@ -31,19 +31,25 @@
 
 ---
 
-## Next Step - UC2 (In progress: not started yet)
+## UC2 - REST API for Data Access (Completed)
+
+### What works
+- FastAPI backend implemented in `src/app/main.py`.
+- MongoDB startup/shutdown lifecycle uses `MONGO_URI` / `MONGODB_ATLAS_URI` and `MONGO_DB_NAME` / `DB_NAME`.
+- Mongo documents are serialized safely for JSON responses, including `_id`.
 
 ### Required endpoints
-- [ ] Q1: List all available assets (`assetId` list)
-- [ ] Q2: Get full metadata for a specific `assetId` (latest active version)
-- [ ] Q3: List all registered data sources
-- [ ] Q4: Get full details for a specific `dataSourceId`
-- [ ] Q5: Get historical time-series filtered by `assetId` and `dataSourceId`
+- [x] Q1: List all available assets (`assetId` list, active rows only)
+- [x] Q2: Get full metadata for a specific `assetId` (latest active version)
+- [x] Q3: List all registered data sources
+- [x] Q4: Get full details for a specific `dataSourceId`
+- [x] Q5: Get historical time-series filtered by `assetId` and `dataSourceId`
+- [x] Optional Q5 date filters: `startDate` and `endDate`
 
-### Suggested implementation
-- Backend framework: FastAPI
-- Add routes + Pydantic response models
-- Add basic tests for each endpoint
+### Verification
+- API tests cover Q1-Q5 happy paths, not-found responses, Q5 date filtering, and validation errors.
+- Latest run: `.venv/bin/python -m pytest` passed with 18 tests.
+- Latest run: `.venv/bin/python -m ruff check .` passed.
 
 ---
 
