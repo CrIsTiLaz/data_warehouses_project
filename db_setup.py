@@ -17,6 +17,7 @@ from typing import Any
 from dotenv import load_dotenv
 from pymongo import MongoClient
 from pymongo.collection import Collection
+from quality import ensure_quality_collections_and_indexes
 
 _ENV_FILE = Path(__file__).resolve().parent / ".env"
 load_dotenv(_ENV_FILE)
@@ -67,10 +68,7 @@ def insert_versioned(
 
 def ensure_collections(db) -> None:
     """Create required collections if they do not exist."""
-    required = {"assets", "data_sources", "time_series"}
-    existing = set(db.list_collection_names())
-    for name in sorted(required - existing):
-        db.create_collection(name)
+    ensure_quality_collections_and_indexes(db)
 
 
 def seed_data(db) -> None:
@@ -278,7 +276,15 @@ def main() -> None:
     db = client[DB_NAME]
 
     ensure_collections(db)
-    seed_data(db)
+    if (
+        db["assets"].count_documents({}) == 0
+        and db["data_sources"].count_documents({}) == 0
+        and db["time_series"].count_documents({}) == 0
+    ):
+        seed_data(db)
+        print("Seed data inserted.")
+    else:
+        print("Existing warehouse data detected; seed step skipped.")
 
     collections = sorted(db.list_collection_names())
     print(f"Database initialized: {DB_NAME}")

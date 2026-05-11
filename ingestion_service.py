@@ -20,11 +20,18 @@ import os
 import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
-from pathlib import Path
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 
 import requests
+from quality import (
+    TimeSeriesInsertStats,
+    create_ingestion_run,
+    ensure_quality_collections_and_indexes,
+    finalize_ingestion_run,
+    insert_valid_time_series_documents,
+)
 from dotenv import load_dotenv
 from pymongo import MongoClient
 from pymongo.collection import Collection
@@ -100,6 +107,10 @@ class IngestionStats:
     asset_id: str
     asset_action: str
     inserted_points: int
+    invalid_points: int = 0
+    duplicate_points: int = 0
+    validation_errors: tuple[str, ...] = ()
+    data_source_id: str = DATA_SOURCE_ID
 
 
 def now_utc_iso() -> str:
@@ -611,10 +622,7 @@ def parse_metal_spot(
 
 def ensure_collections(db: Database) -> None:
     """Create required collections if they do not already exist."""
-    required = {"assets", "time_series", "data_sources"}
-    existing = set(db.list_collection_names())
-    for name in sorted(required - existing):
-        db.create_collection(name)
+    ensure_quality_collections_and_indexes(db)
 
 
 def _ensure_canonical_data_source(
@@ -751,14 +759,18 @@ def bulk_insert_time_series_points(
     series_type: str,
     points: list[dict[str, Any]],
     data_source_id: str = DATA_SOURCE_ID,
-) -> int:
-    """Insert only missing points in bulk for one asset and interval."""
+) -> TimeSeriesInsertStats:
+    """Validate and insert missing points in bulk for one asset and interval."""
     if not points:
-        return 0
+        return TimeSeriesInsertStats()
 
     timestamps = [p["timestamp"] for p in points if p.get("timestamp")]
     existing = time_series.find(
-        {"assetId": asset_id, "interval": interval, "timestamp": {"$in": timestamps}},
+        {
+            "assetId": asset_id,
+            "dataSourceId": data_source_id,
+            "timestamp": {"$in": timestamps},
+        },
         projection={"timestamp": 1},
     )
     existing_timestamps = {row["timestamp"] for row in existing}
@@ -775,13 +787,18 @@ def bulk_insert_time_series_points(
             "ingested_at": now_utc_iso(),
         }
         for point in points
-        if point["timestamp"] not in existing_timestamps
+        if point.get("timestamp") not in existing_timestamps
     ]
     if not docs:
-        return 0
+        return TimeSeriesInsertStats(duplicates=len(existing_timestamps))
 
-    result = time_series.insert_many(docs, ordered=False)
-    return len(result.inserted_ids)
+    insert_stats = insert_valid_time_series_documents(time_series, docs)
+    return TimeSeriesInsertStats(
+        inserted=insert_stats.inserted,
+        invalid=insert_stats.invalid,
+        duplicates=insert_stats.duplicates + len(existing_timestamps),
+        invalid_reasons=insert_stats.invalid_reasons,
+    )
 
 
 def ingest_symbol_data(
@@ -856,7 +873,7 @@ def ingest_symbol_data(
     asset_action = upsert_versioned_asset(
         assets, asset_metadata, data_source_id=data_source_id
     )
-    inserted_points = bulk_insert_time_series_points(
+    insert_stats = bulk_insert_time_series_points(
         time_series,
         asset_id=asset_metadata["assetId"],
         symbol=asset_metadata["symbol"],
@@ -868,7 +885,11 @@ def ingest_symbol_data(
     return IngestionStats(
         asset_id=asset_metadata["assetId"],
         asset_action=asset_action,
-        inserted_points=inserted_points,
+        inserted_points=insert_stats.inserted,
+        invalid_points=insert_stats.invalid,
+        duplicate_points=insert_stats.duplicates,
+        validation_errors=insert_stats.invalid_reasons,
+        data_source_id=data_source_id,
     )
 
 
@@ -953,38 +974,87 @@ def main() -> None:
     if any(SYMBOL_INGEST_SPECS[s][0] == "metal" for s in symbols):
         ensure_metals_dev_data_source(db["data_sources"])
 
+    run_doc = create_ingestion_run(symbols)
     stats_out: list[IngestionStats] = []
+    symbol_errors: list[str] = []
 
-    with requests.Session() as session:
-        for index, sym in enumerate(symbols):
-            market_type, _ = SYMBOL_INGEST_SPECS[sym]
-            if index > 0:
-                logger.info(
-                    "Waiting %ss before %s request (free-tier spacing)...",
-                    SECONDS_BETWEEN_SYMBOL_REQUESTS,
-                    sym,
-                )
-                time.sleep(SECONDS_BETWEEN_SYMBOL_REQUESTS)
-            stats_out.append(
-                ingest_symbol_data(
-                    db,
-                    session,
-                    api_key=api_key,
-                    min_days=MIN_HISTORY_DAYS,
-                    symbol=sym,
-                    market_type=market_type,
-                    time_series_force_refresh=bool(args.force),
-                    metal_api_key=metal_api_key,
-                )
+    try:
+        with requests.Session() as session:
+            for index, sym in enumerate(symbols):
+                market_type, _ = SYMBOL_INGEST_SPECS[sym]
+                if index > 0:
+                    logger.info(
+                        "Waiting %ss before %s request (free-tier spacing)...",
+                        SECONDS_BETWEEN_SYMBOL_REQUESTS,
+                        sym,
+                    )
+                    time.sleep(SECONDS_BETWEEN_SYMBOL_REQUESTS)
+                try:
+                    stats = ingest_symbol_data(
+                        db,
+                        session,
+                        api_key=api_key,
+                        min_days=MIN_HISTORY_DAYS,
+                        symbol=sym,
+                        market_type=market_type,
+                        time_series_force_refresh=bool(args.force),
+                        metal_api_key=metal_api_key,
+                    )
+                except Exception as exc:
+                    run_doc["symbolsFailed"].append(sym)
+                    symbol_errors.append(f"{sym}: {exc}")
+                    logger.exception("Ingestion failed for symbol=%s", sym)
+                    continue
+
+                stats_out.append(stats)
+                run_doc["symbolsSucceeded"].append(sym)
+                run_doc["recordsInserted"] += stats.inserted_points
+                run_doc["invalidRowsSkipped"] += stats.invalid_points
+                run_doc["duplicateRowsSkipped"] += stats.duplicate_points
+                run_doc["validationErrors"].extend(stats.validation_errors)
+                run_doc["dataSourcesTouched"].append(stats.data_source_id)
+                for reason in stats.validation_errors:
+                    logger.warning("Skipped invalid %s row: %s", sym, reason)
+
+        for row in stats_out:
+            logger.info(
+                "%s: asset=%s, inserted_points=%s, invalid_points=%s, duplicate_points=%s",
+                row.asset_id,
+                row.asset_action,
+                row.inserted_points,
+                row.invalid_points,
+                row.duplicate_points,
             )
 
-    for row in stats_out:
-        logger.info(
-            "%s: asset=%s, inserted_points=%s",
-            row.asset_id,
-            row.asset_action,
-            row.inserted_points,
+        if symbol_errors and stats_out:
+            status = "partial"
+        elif symbol_errors:
+            status = "failed"
+        else:
+            status = "success"
+
+        error_summary = "; ".join(symbol_errors) if symbol_errors else None
+        finalize_ingestion_run(
+            db["ingestion_runs"],
+            run_doc,
+            status=status,
+            error_summary=error_summary,
         )
+        if symbol_errors:
+            raise IngestionError(error_summary or "Ingestion failed.")
+    except Exception as exc:
+        if not run_doc.get("finishedAt"):
+            for sym in symbols:
+                if sym not in run_doc["symbolsSucceeded"] and sym not in run_doc["symbolsFailed"]:
+                    run_doc["symbolsFailed"].append(sym)
+            finalize_ingestion_run(
+                db["ingestion_runs"],
+                run_doc,
+                status="failed" if not stats_out else "partial",
+                error_summary=str(exc),
+            )
+        raise
+
     logger.info("Ingestion completed for database: %s", db_name)
 
 

@@ -44,11 +44,41 @@ class FakeCollection:
         self,
         query: dict[str, Any],
         sort: list[tuple[str, int]] | None = None,
+        projection: dict[str, int] | None = None,
     ) -> dict[str, Any] | None:
-        cursor = self.find(query)
+        cursor = self.find(query, projection=projection)
         if sort:
             cursor.sort(sort)
         return next(iter(cursor), None)
+
+    def count_documents(self, query: dict[str, Any]) -> int:
+        return len([doc for doc in self._docs if self._matches(doc, query)])
+
+    def aggregate(self, pipeline: list[dict[str, Any]]) -> Iterator[dict[str, Any]]:
+        if any("$limit" in stage for stage in pipeline):
+            seen: set[tuple[Any, Any, Any]] = set()
+            for doc in self._docs:
+                key = (doc.get("assetId"), doc.get("dataSourceId"), doc.get("timestamp"))
+                if key in seen:
+                    yield {"_id": key, "count": 2}
+                    return
+                seen.add(key)
+            return
+
+        latest_by_pair: dict[tuple[Any, Any], str] = {}
+        for doc in self._docs:
+            key = (doc.get("assetId"), doc.get("dataSourceId"))
+            timestamp = doc.get("timestamp")
+            if key not in latest_by_pair or timestamp > latest_by_pair[key]:
+                latest_by_pair[key] = timestamp
+        for asset_id, data_source_id in sorted(latest_by_pair):
+            yield {
+                "_id": {"assetId": asset_id, "dataSourceId": data_source_id},
+                "latestTimestamp": latest_by_pair[(asset_id, data_source_id)],
+            }
+
+    def insert_one(self, doc: dict[str, Any]) -> None:
+        self._docs.append(deepcopy(doc))
 
     def _matches(self, doc: dict[str, Any], query: dict[str, Any]) -> bool:
         for key, expected in query.items():
@@ -141,6 +171,25 @@ class FakeDb:
                         "dataSourceId": "alpha_vantage_api_v1",
                         "timestamp": "2026-05-01T00:00:00Z",
                         "point": {"close": 105.5},
+                    },
+                ]
+            ),
+            "ingestion_runs": FakeCollection(
+                [
+                    {
+                        "_id": ObjectId("000000000000000000000008"),
+                        "runId": "run-1",
+                        "startedAt": "2026-05-02T01:00:00+00:00",
+                        "finishedAt": "2026-05-02T01:01:00+00:00",
+                        "status": "success",
+                        "symbolsRequested": ["TSLA"],
+                        "symbolsSucceeded": ["TSLA"],
+                        "symbolsFailed": [],
+                        "recordsInserted": 2,
+                        "invalidRowsSkipped": 1,
+                        "duplicateRowsSkipped": 0,
+                        "errorSummary": None,
+                        "dataSourcesTouched": ["alpha_vantage_api_v1"],
                     },
                 ]
             ),
@@ -254,3 +303,27 @@ def test_get_time_series_validation_error(client: TestClient) -> None:
 
     assert response.status_code == 400
     assert response.json()["detail"] == "dataSourceId query parameter is required."
+
+
+def test_quality_freshness_endpoint(client: TestClient) -> None:
+    response = client.get("/quality/freshness", params={"thresholdHours": 24})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["thresholdHours"] == 24
+    assert payload["count"] == 1
+    assert payload["items"][0]["assetId"] == "TSLA"
+    assert payload["items"][0]["dataSourceId"] == "alpha_vantage_api_v1"
+    assert payload["items"][0]["latestTimestamp"] == "2026-05-02T00:00:00Z"
+    assert payload["items"][0]["status"] in {"fresh", "stale"}
+
+
+def test_quality_summary_endpoint(client: TestClient) -> None:
+    response = client.get("/quality/summary")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["totalTimeSeriesRows"] == 2
+    assert payload["duplicateRisk"] == {"hasDuplicates": False, "status": "ok"}
+    assert payload["invalidRowsSkippedLatestRun"] == 1
+    assert payload["latestIngestionRun"]["status"] == "success"

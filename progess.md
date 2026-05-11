@@ -64,9 +64,24 @@
 ---
 
 ## UC3 - Analytics (Pending)
+- [x] Step 3: Data Quality & Governance prep
 - [ ] Min / Max / Average metrics on time-series
 - [ ] Basic trend forecasting
 - [ ] Ensure data shape is Spark-friendly
+
+### Step 3 - Data Quality & Governance (Completed)
+- Added reusable data quality helpers in `quality.py`.
+- Added `ingestion_runs` audit collection support.
+- Ingestion now records final run documents with run ID, timestamps, status, requested/succeeded/failed symbols, inserted records, skipped invalid rows, skipped duplicates, validation errors, error summary, and touched data sources.
+- Time-series writes now validate `assetId`, `dataSourceId`, UTC ISO `timestamp`, and numeric price fields before insertion.
+- Invalid time-series rows are skipped and counted without crashing the whole run.
+- Duplicate time-series rows are guarded by a unique index on (`assetId`, `dataSourceId`, `timestamp`) and duplicate-key insert errors are counted as skipped duplicates.
+- `db_setup.py` and ingestion setup ensure `ingestion_runs` and quality indexes are created idempotently without deleting existing data.
+- Added `/quality/freshness` endpoint with `fresh`, `stale`, and `missing` status values.
+- Added `/quality/summary` endpoint with total row count, duplicate risk, latest invalid-row count, and latest ingestion run status.
+- Added tests for validation rejection, duplicate handling, ingestion audit success/failure documents, freshness status logic, and quality endpoint schemas.
+- Latest run: `.venv/bin/python -m pytest` passed with 26 tests.
+- Latest run: `.venv/bin/python -m ruff check .` passed.
 
 ---
 

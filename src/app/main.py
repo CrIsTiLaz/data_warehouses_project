@@ -8,6 +8,12 @@ from pathlib import Path
 from typing import Any
 
 from bson import ObjectId
+from quality import (
+    DEFAULT_FRESHNESS_THRESHOLD_HOURS,
+    compute_freshness,
+    detect_duplicate_risk,
+    latest_ingestion_run,
+)
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from pymongo import MongoClient
@@ -199,4 +205,31 @@ def get_time_series(
         "dataSourceId": data_source_id,
         "count": len(points),
         "points": serialize_mongo(points),
+    }
+
+
+@app.get("/quality/freshness")
+def get_quality_freshness(
+    threshold_hours: int = Query(
+        default=DEFAULT_FRESHNESS_THRESHOLD_HOURS,
+        alias="thresholdHours",
+        ge=1,
+    ),
+    db: Database = Depends(get_db),
+) -> dict[str, Any]:
+    rows = compute_freshness(db["time_series"], threshold_hours=threshold_hours)
+    return {"thresholdHours": threshold_hours, "count": len(rows), "items": serialize_mongo(rows)}
+
+
+@app.get("/quality/summary")
+def get_quality_summary(db: Database = Depends(get_db)) -> dict[str, Any]:
+    latest_run = latest_ingestion_run(db["ingestion_runs"])
+    duplicate_risk = detect_duplicate_risk(db["time_series"])
+    invalid_rows = int(latest_run.get("invalidRowsSkipped", 0)) if latest_run else 0
+
+    return {
+        "totalTimeSeriesRows": db["time_series"].count_documents({}),
+        "duplicateRisk": duplicate_risk,
+        "invalidRowsSkippedLatestRun": invalid_rows,
+        "latestIngestionRun": serialize_mongo(latest_run),
     }
