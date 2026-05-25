@@ -111,6 +111,7 @@ Endpoints:
 - `GET /time-series?assetId=TSLA&dataSourceId=alpha_vantage_api_v1` → matching rows sorted by `timestamp`
 - `GET /quality/freshness` → latest timestamp and lag per (`assetId`, `dataSourceId`)
 - `GET /quality/summary` → row count, duplicate risk, and latest ingestion run status
+- `POST /assistant/query` → grounded assistant response using read-only DWH tools
 
 Sample requests:
 
@@ -131,3 +132,94 @@ Freshness statuses:
 - `fresh` — latest timestamp is within the threshold, default 24 hours
 - `stale` — latest timestamp is older than the threshold
 - `missing` — no valid UTC latest timestamp is available for that pair
+
+## LLM assistant via MCP (UC4)
+
+The assistant endpoint is implemented as a grounded, read-only orchestration layer over the DWH tools. It never writes to MongoDB and should not invent numeric values; numeric and temporal claims are formed from tool results and returned with grounding metadata.
+
+Assistant environment variables:
+
+- `ASSISTANT_MCP_ENABLED` — set to `true` to enable assistant tool execution
+- `ASSISTANT_MCP_TIMEOUT_SECONDS` — timeout guard, default `10`
+- `ASSISTANT_MODEL` — local MCP adapter label, default `grounded-dwh-assistant`
+- `ASSISTANT_MCP_ENDPOINT` — optional endpoint/transport setting for future external MCP adapter use
+- `LLM_API_KEY` — OpenRouter API key for LLM tool planning/final answer mode
+- `LLM_MODEL` — OpenRouter model ID, for example `openai/gpt-4o-mini`
+- `LLM_BASE_URL` — optional, default `https://openrouter.ai/api/v1`
+- `LLM_TIMEOUT_SECONDS` — optional, default `15`
+
+Example `.env` snippet:
+
+```bash
+ASSISTANT_MCP_ENABLED=true
+LLM_API_KEY=your-openrouter-key
+LLM_MODEL=openai/gpt-4o-mini
+```
+
+Behavior:
+
+- If `ASSISTANT_MCP_ENABLED` is not `true`, `POST /assistant/query` returns HTTP 503 with a structured diagnostic.
+- If MCP is enabled but `LLM_API_KEY` and `LLM_MODEL` are absent, the assistant uses deterministic fallback planning with the same grounded read-only tools.
+- If only one of `LLM_API_KEY` or `LLM_MODEL` is set, the endpoint returns HTTP 503 with an actionable configuration message.
+- If OpenRouter is configured but a timeout/network error occurs, the assistant falls back to deterministic planning instead of making unsupported claims.
+
+Sample request:
+
+```bash
+curl -X POST "http://127.0.0.1:8000/assistant/query" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "question": "What is the latest close price for TSLA from alpha_vantage_api_v1?"
+  }'
+```
+
+You can also pass explicit context to remove ambiguity:
+
+```bash
+curl -X POST "http://127.0.0.1:8000/assistant/query" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "question": "What is the latest close price?",
+    "context": {
+      "assetId": "TSLA",
+      "dataSourceId": "alpha_vantage_api_v1"
+    }
+  }'
+```
+
+Response shape:
+
+```json
+{
+  "answer": "Found 100 time-series rows for TSLA from alpha_vantage_api_v1. Latest timestamp is 2026-05-01T00:00:00Z. The latest close is 390.82.",
+  "status": "grounded",
+  "grounding": [
+    {
+      "toolName": "query_time_series",
+      "arguments": {
+        "asset_id": "TSLA",
+        "data_source_id": "alpha_vantage_api_v1"
+      },
+      "provenance": {
+        "endpoint": "GET /time-series",
+        "collection": "time_series"
+      },
+      "resultSummary": {
+        "assetId": "TSLA",
+        "dataSourceId": "alpha_vantage_api_v1",
+        "count": 100,
+        "points": {
+          "count": 100
+        }
+      }
+    }
+  ],
+  "clarificationNeeded": null
+}
+```
+
+Statuses:
+
+- `grounded` — answer was formed from read-only tool results
+- `insufficient_data` — the assistant needs an asset/source/date range or no matching data was found
+- `error` — assistant execution failed or MCP is unavailable

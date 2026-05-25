@@ -7,6 +7,10 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
+from assistant.mcp_adapter import LocalMCPAdapter, MCPConfig, MCPUnavailableError
+from assistant.models import AssistantQueryRequest, AssistantQueryResponse
+from assistant.service import AssistantService
+from assistant.tools import DwhReadOnlyTools
 from bson import ObjectId
 from quality import (
     DEFAULT_FRESHNESS_THRESHOLD_HOURS,
@@ -100,6 +104,12 @@ def get_db(request: Request) -> Database:
     if db is None:
         raise HTTPException(status_code=500, detail="Database connection is not initialized.")
     return db
+
+
+def get_assistant_service(db: Database = Depends(get_db)) -> AssistantService:
+    tools = DwhReadOnlyTools(db)
+    adapter = LocalMCPAdapter(tools.registry(), MCPConfig.from_env(), tools.tool_specs())
+    return AssistantService(adapter)
 
 
 @app.get("/assets")
@@ -233,3 +243,24 @@ def get_quality_summary(db: Database = Depends(get_db)) -> dict[str, Any]:
         "invalidRowsSkippedLatestRun": invalid_rows,
         "latestIngestionRun": serialize_mongo(latest_run),
     }
+
+
+@app.post("/assistant/query", response_model=AssistantQueryResponse)
+def query_assistant(
+    payload: AssistantQueryRequest,
+    service: AssistantService = Depends(get_assistant_service),
+) -> AssistantQueryResponse:
+    question = payload.question.strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="question must not be empty.")
+    try:
+        return service.answer(question, payload.context)
+    except MCPUnavailableError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "status": "error",
+                "message": str(exc),
+                "action": "Set ASSISTANT_MCP_ENABLED=true and verify MCP assistant configuration.",
+            },
+        ) from exc

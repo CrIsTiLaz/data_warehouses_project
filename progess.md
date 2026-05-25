@@ -4,7 +4,7 @@
 - [x] UC1: Data Ingest
 - [x] UC2: REST API for Data Access (Q1-Q5)
 - [ ] UC3: Analytics & Data Mining
-- [ ] UC4: LLM-Powered Assistant (MCP)
+- [x] UC4: LLM-Powered Assistant (MCP)
 - [ ] Deliverables (report, IIAGen statement, demo video)
 
 ---
@@ -85,9 +85,24 @@
 
 ---
 
-## UC4 - LLM Assistant with MCP (Pending)
-- [ ] Integrate MCP-based assistant
-- [ ] Ground responses in live MongoDB queries
+## UC4 - LLM Assistant with MCP (Completed)
+- [x] Added assistant package under `src/assistant/`.
+- [x] Added request/response models and grounding metadata schema.
+- [x] Added read-only DWH tools for assets, data sources, time-series, freshness, and quality summary.
+- [x] Added MCP adapter abstraction with env-configured enablement, timeout, model label, optional provider key, and optional endpoint.
+- [x] Added OpenRouter LLM integration using `LLM_API_KEY`, `LLM_MODEL`, optional `LLM_BASE_URL`, and optional `LLM_TIMEOUT_SECONDS`.
+- [x] LLM mode exposes tool definitions, lets the model choose read-only tools, executes selected tools through the adapter, and asks the model for a final answer using tool outputs.
+- [x] Added deterministic fallback planning when OpenRouter is not configured or a runtime LLM/network error occurs.
+- [x] Added deterministic service orchestration that selects tools, executes them through the adapter, and composes grounded answers when fallback mode is used.
+- [x] Added `POST /assistant/query`.
+- [x] Empty questions return 400; overly long questions return 422.
+- [x] MCP disabled/unavailable returns structured 503 diagnostics.
+- [x] Partial LLM configuration returns structured 503 diagnostics without exposing secrets.
+- [x] Missing data and ambiguous time-series questions return `insufficient_data` with explicit clarification.
+- [x] Numeric claims are derived from tool results and included with grounding metadata.
+- [x] Added assistant tests for LLM tool calls, multi-tool calls, OpenRouter HTTP mocking, runtime fallback, missing data, MCP unavailable, invalid input, endpoint integration, and no-hallucination behavior.
+- [x] Latest run: `.venv/bin/python -m pytest` passed with 40 tests.
+- [x] Latest run: `.venv/bin/python -m ruff check .` passed.
 
 ---
 
