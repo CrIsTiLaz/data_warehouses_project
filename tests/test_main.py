@@ -212,7 +212,26 @@ def test_list_assets(client: TestClient) -> None:
     response = client.get("/assets")
 
     assert response.status_code == 200
-    assert response.json() == {"assetIds": ["BTC", "TSLA"]}
+    assert response.json() == {
+        "assetIds": ["BTC", "TSLA"],
+        "count": 2,
+        "total": 2,
+        "limit": 100,
+        "offset": 0,
+    }
+
+
+def test_list_assets_with_pagination(client: TestClient) -> None:
+    response = client.get("/assets", params={"limit": 1, "offset": 1})
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "assetIds": ["TSLA"],
+        "count": 1,
+        "total": 2,
+        "limit": 1,
+        "offset": 1,
+    }
 
 
 def test_get_asset(client: TestClient) -> None:
@@ -236,7 +255,36 @@ def test_list_data_sources(client: TestClient) -> None:
     response = client.get("/data-sources")
 
     assert response.status_code == 200
-    assert response.json() == {"dataSourceIds": ["alpha_vantage_api_v1", "metals_dev_v1"]}
+    assert response.json() == {
+        "dataSourceIds": ["alpha_vantage_api_v1", "metals_dev_v1"],
+        "count": 2,
+        "total": 2,
+        "limit": 100,
+        "offset": 0,
+    }
+
+
+def test_list_data_sources_with_pagination(client: TestClient) -> None:
+    response = client.get("/data-sources", params={"limit": 1, "offset": 0})
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "dataSourceIds": ["alpha_vantage_api_v1"],
+        "count": 1,
+        "total": 2,
+        "limit": 1,
+        "offset": 0,
+    }
+
+
+def test_list_endpoints_pagination_validation_errors(client: TestClient) -> None:
+    bad_limit = client.get("/assets", params={"limit": 0})
+    bad_max_limit = client.get("/assets", params={"limit": 999})
+    bad_offset = client.get("/data-sources", params={"offset": -1})
+
+    assert bad_limit.status_code == 422
+    assert bad_max_limit.status_code == 422
+    assert bad_offset.status_code == 422
 
 
 def test_get_data_source(client: TestClient) -> None:

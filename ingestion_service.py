@@ -705,6 +705,7 @@ def upsert_versioned_asset(
     asset_payload: dict[str, Any],
     *,
     data_source_id: str = DATA_SOURCE_ID,
+    lifecycle_events: Collection | None = None,
 ) -> str:
     """
     Enforce temporal versioning for assets.
@@ -717,14 +718,14 @@ def upsert_versioned_asset(
     """
     asset_id = str(asset_payload["assetId"])
     latest = assets.find_one({"assetId": asset_id}, sort=[("version", -1)])
-    timestamp = now_utc_iso()
+    version_timestamp = now_utc_iso()
 
     if latest is None:
         assets.insert_one(
             {
                 **asset_payload,
                 "version": 1,
-                "valid_from": timestamp,
+                "valid_from": version_timestamp,
                 "is_active": True,
                 "dataSourceId": data_source_id,
             }
@@ -736,17 +737,36 @@ def upsert_versioned_asset(
 
     assets.update_many(
         {"assetId": asset_id, "is_active": True},
-        {"$set": {"is_active": False, "valid_to": timestamp}},
+        {"$set": {"is_active": False, "valid_to": version_timestamp}},
     )
+    previous_version = int(latest.get("version", 1))
+    new_version = previous_version + 1
     assets.insert_one(
         {
             **asset_payload,
-            "version": int(latest.get("version", 1)) + 1,
-            "valid_from": timestamp,
+            "version": new_version,
+            "valid_from": version_timestamp,
             "is_active": True,
             "dataSourceId": data_source_id,
         }
     )
+    if lifecycle_events is not None:
+        event_doc = {
+            "eventId": f"{asset_id}:deactivated:{previous_version}->{new_version}",
+            "assetId": asset_id,
+            "eventType": "deactivated",
+            "previousVersion": previous_version,
+            "newVersion": new_version,
+            "valid_to": version_timestamp,
+            "newVersionValidFrom": version_timestamp,
+            "recordedAt": now_utc_iso(),
+            "dataSourceId": data_source_id,
+        }
+        lifecycle_events.update_one(
+            {"eventId": event_doc["eventId"]},
+            {"$setOnInsert": event_doc},
+            upsert=True,
+        )
     return "inserted_new_version"
 
 
@@ -815,6 +835,7 @@ def ingest_symbol_data(
     """Ingest one symbol according to market type parser."""
     assets = db["assets"]
     time_series = db["time_series"]
+    lifecycle_events = db["asset_lifecycle_events"]
     data_source_id = DATA_SOURCE_ID
 
     if market_type == "stock":
@@ -871,7 +892,10 @@ def ingest_symbol_data(
         )
 
     asset_action = upsert_versioned_asset(
-        assets, asset_metadata, data_source_id=data_source_id
+        assets,
+        asset_metadata,
+        data_source_id=data_source_id,
+        lifecycle_events=lifecycle_events,
     )
     insert_stats = bulk_insert_time_series_points(
         time_series,

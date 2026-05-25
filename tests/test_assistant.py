@@ -85,10 +85,18 @@ class FakeService:
         )
 
 
+class MinimalDb:
+    def __getitem__(self, name: str) -> object:
+        return object()
+
+
 @pytest.fixture
 def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
     monkeypatch.setenv("MONGO_URI", "mongodb://localhost:27017")
-    app.dependency_overrides[get_db] = lambda: object()
+    monkeypatch.setenv("ASSISTANT_MCP_ENABLED", "false")
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    app.dependency_overrides[get_db] = lambda: MinimalDb()
     with TestClient(app) as test_client:
         yield test_client
     app.dependency_overrides.clear()
@@ -560,6 +568,201 @@ def test_assistant_llm_empty_tool_result_does_not_fabricate_values() -> None:
     assert "No data found" in response.answer
     assert "107" not in response.answer
     assert len(llm.payloads) == 1
+
+
+def test_assistant_llm_rejects_unknown_tool_and_falls_back_safely() -> None:
+    adapter = FakeAdapter(
+        {
+            "query_time_series": {
+                "assetId": "TSLA",
+                "dataSourceId": "alpha_vantage_api_v1",
+                "count": 1,
+                "points": [{"timestamp": "2026-05-02T00:00:00Z", "point": {"close": 107.0}}],
+                "provenance": {"endpoint": "GET /time-series"},
+            }
+        }
+    )
+    llm = FakeLLMClient(
+        [
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "tool_calls": [
+                                {
+                                    "id": "call-1",
+                                    "type": "function",
+                                    "function": {"name": "drop_database", "arguments": "{}"},
+                                }
+                            ],
+                        }
+                    }
+                ]
+            }
+        ]
+    )
+
+    response = AssistantService(adapter, llm_client=llm, llm_config=ready_llm_config()).answer(
+        "What is the latest close price for TSLA from alpha_vantage_api_v1?"
+    )
+
+    assert response.status == "grounded"
+    assert response.grounding[0].toolName == "query_time_series"
+    assert [call[0] for call in adapter.calls] == ["query_time_series"]
+
+
+def test_assistant_llm_rejects_malformed_tool_arguments_and_falls_back() -> None:
+    adapter = FakeAdapter(
+        {
+            "query_time_series": {
+                "assetId": "TSLA",
+                "dataSourceId": "alpha_vantage_api_v1",
+                "count": 1,
+                "points": [{"timestamp": "2026-05-02T00:00:00Z", "point": {"close": 107.0}}],
+                "provenance": {"endpoint": "GET /time-series"},
+            }
+        }
+    )
+    llm = FakeLLMClient(
+        [
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "tool_calls": [
+                                {
+                                    "id": "call-1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "query_time_series",
+                                        "arguments": "{malformed-json",
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ]
+            }
+        ]
+    )
+
+    response = AssistantService(adapter, llm_client=llm, llm_config=ready_llm_config()).answer(
+        "What is the latest close price for TSLA from alpha_vantage_api_v1?"
+    )
+
+    assert response.status == "grounded"
+    assert response.grounding[0].toolName == "query_time_series"
+    assert [call[0] for call in adapter.calls] == ["query_time_series"]
+
+
+def test_assistant_llm_guardrail_overrides_wrong_tool_for_quality_query() -> None:
+    adapter = FakeAdapter(
+        {
+            "list_assets": {
+                "assetIds": ["TSLA", "BTC"],
+                "provenance": {"endpoint": "GET /assets"},
+            },
+            "get_quality_freshness": {
+                "thresholdHours": 24,
+                "count": 2,
+                "items": [
+                    {"assetId": "TSLA", "dataSourceId": "alpha_vantage_api_v1", "status": "fresh"},
+                    {"assetId": "BTC", "dataSourceId": "alpha_vantage_api_v1", "status": "stale"},
+                ],
+                "provenance": {"endpoint": "GET /quality/freshness"},
+            },
+        }
+    )
+    llm = FakeLLMClient(
+        [
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "tool_calls": [
+                                {
+                                    "id": "call-1",
+                                    "type": "function",
+                                    "function": {"name": "list_assets", "arguments": "{}"},
+                                }
+                            ],
+                        }
+                    }
+                ]
+            }
+        ]
+    )
+
+    response = AssistantService(adapter, llm_client=llm, llm_config=ready_llm_config()).answer(
+        "Is any asset stale based on quality freshness?"
+    )
+
+    assert response.status == "grounded"
+    assert "1 are stale" in response.answer
+    assert [call[0] for call in adapter.calls] == ["get_quality_freshness"]
+
+
+def test_assistant_llm_final_response_failure_does_not_hallucinate() -> None:
+    class FailSecondCallLLM(FakeLLMClient):
+        def __init__(self) -> None:
+            super().__init__(
+                responses=[
+                    {
+                        "choices": [
+                            {
+                                "message": {
+                                    "role": "assistant",
+                                    "tool_calls": [
+                                        {
+                                            "id": "call-1",
+                                            "type": "function",
+                                            "function": {
+                                                "name": "query_time_series",
+                                                "arguments": (
+                                                    '{"asset_id":"TSLA",'
+                                                    '"data_source_id":"alpha_vantage_api_v1"}'
+                                                ),
+                                            },
+                                        }
+                                    ],
+                                }
+                            }
+                        ]
+                    }
+                ]
+            )
+            self.calls = 0
+
+        def chat_completion(self, payload: dict[str, Any]) -> dict[str, Any]:
+            self.calls += 1
+            if self.calls > 1:
+                raise RuntimeError("final answer generation failed")
+            return super().chat_completion(payload)
+
+    adapter = FakeAdapter(
+        {
+            "query_time_series": {
+                "assetId": "TSLA",
+                "dataSourceId": "alpha_vantage_api_v1",
+                "count": 1,
+                "points": [{"timestamp": "2026-05-02T00:00:00Z", "point": {"close": 107.0}}],
+                "provenance": {"endpoint": "GET /time-series"},
+            }
+        }
+    )
+
+    response = AssistantService(
+        adapter,
+        llm_client=FailSecondCallLLM(),
+        llm_config=ready_llm_config(),
+    ).answer("What is the latest close price for TSLA from alpha_vantage_api_v1?")
+
+    assert response.status == "grounded"
+    assert "latest close is 107.0" in response.answer
+    assert "9999" not in response.answer
 
 
 def test_openrouter_client_uses_chat_completions_without_exposing_key(

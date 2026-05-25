@@ -79,6 +79,15 @@ Before writing to `time_series`, rows are validated for non-empty `assetId`, non
 
 Setup and ingestion ensure the `ingestion_runs` collection exists and create an idempotent unique index on `time_series` for (`assetId`, `dataSourceId`, `timestamp`). Duplicate key errors are treated as skipped duplicate rows, not fatal ingestion failures.
 
+Temporal lifecycle handling for assets:
+
+- On metadata change, previously active versions are marked `is_active=false`.
+- Deactivated versions always receive `valid_to` equal to the new version `valid_from`.
+- A lifecycle audit event is recorded in `asset_lifecycle_events` with:
+  - `assetId`, `eventType`, `previousVersion`, `newVersion`
+  - `valid_to`, `newVersionValidFrom`, `recordedAt`, `dataSourceId`
+- Lifecycle events are idempotent via unique `eventId`.
+
 ## REST API (UC2)
 
 The FastAPI backend is implemented in `src/app/main.py` and reads the same MongoDB
@@ -104,9 +113,9 @@ Open the generated docs at `http://127.0.0.1:8000/docs`.
 
 Endpoints:
 
-- `GET /assets` → `{ "assetIds": ["TSLA", "BTC"] }`
+- `GET /assets` → paginated active IDs + metadata (`count`, `total`, `limit`, `offset`)
 - `GET /assets/{asset_id}` → latest active asset metadata
-- `GET /data-sources` → `{ "dataSourceIds": ["alpha_vantage_api_v1"] }`
+- `GET /data-sources` → paginated source IDs + metadata (`count`, `total`, `limit`, `offset`)
 - `GET /data-sources/{source_id}` → full data source details
 - `GET /time-series?assetId=TSLA&dataSourceId=alpha_vantage_api_v1` → matching rows sorted by `timestamp`
 - `GET /analytics/summary?assetId=TSLA&dataSourceId=alpha_vantage_api_v1` → min/max/average metrics
@@ -115,6 +124,43 @@ Endpoints:
 - `GET /quality/freshness` → latest timestamp and lag per (`assetId`, `dataSourceId`)
 - `GET /quality/summary` → row count, duplicate risk, and latest ingestion run status
 - `POST /assistant/query` → grounded assistant response using read-only DWH tools
+
+### Repository / DAL Boundary
+
+The API and assistant tools now consume a lightweight read DAL in `src/repositories.py`:
+
+- `AssetRepository`
+- `DataSourceRepository`
+- `TimeSeriesRepository`
+- `QualityRepository`
+- `AnalyticsRepository` (explicit analytics alias)
+
+This keeps route handlers thin and prevents direct collection query logic from spreading across API endpoints.
+
+### Pagination
+
+`GET /assets` and `GET /data-sources` support:
+
+- `limit` (default `100`, min `1`, max `500`)
+- `offset` (default `0`, min `0`)
+
+Example:
+
+```bash
+curl "http://127.0.0.1:8000/assets?limit=2&offset=0"
+```
+
+Example response:
+
+```json
+{
+  "assetIds": ["BTC", "TSLA"],
+  "count": 2,
+  "total": 7,
+  "limit": 2,
+  "offset": 0
+}
+```
 
 Sample requests:
 
@@ -225,6 +271,9 @@ This project now includes explicit **Apache Spark** / **PySpark** workflows in a
 - **Spark aggregation**: grouped metrics using Spark SQL DataFrames
 - **Spark MLlib**: **LinearRegression**-based next-close prediction
 - **ML workflow**: data load -> feature engineering -> model train -> metrics -> next prediction
+- Explicit `SparkSession` startup for each workflow
+- Spark SQL aggregations use `count`, `min`, `max`, `avg`
+- Spark ML workflow uses `VectorAssembler` + `LinearRegression`
 
 Implementation files:
 
@@ -249,6 +298,13 @@ python -m pip install pyspark
 Spark runtime prerequisite:
 
 - Java Runtime (JRE/JDK) must be installed and available on `PATH` (or via `JAVA_HOME`) for local `SparkSession` startup.
+
+Java 17 example:
+
+```bash
+export JAVA_HOME="/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home"
+export PATH="$JAVA_HOME/bin:$PATH"
+```
 
 ### Export time-series rows for Spark
 
@@ -288,6 +344,21 @@ The Spark aggregation output includes:
 - `lowMin`, `lowMax`, `lowAvg`
 - `volumeMin`, `volumeMax`, `volumeAvg`
 
+Sample aggregation output excerpt:
+
+```json
+[
+  {
+    "assetId": "TSLA",
+    "dataSourceId": "alpha_vantage_api_v1",
+    "count": 6,
+    "closeMin": 101.0,
+    "closeMax": 108.0,
+    "closeAvg": 104.08333333333333
+  }
+]
+```
+
 ### Run Spark MLlib forecast
 
 ```bash
@@ -306,7 +377,29 @@ Forecast output contains:
 - latest close and predicted next close
 - direction (`up`, `down`, `flat`)
 
+Sample forecast output excerpt:
+
+```json
+{
+  "assetId": "TSLA",
+  "dataSourceId": "alpha_vantage_api_v1",
+  "model": "Spark MLlib LinearRegression",
+  "trainingRows": 6,
+  "features": ["timeIndex"],
+  "predictedNextClose": 108.33333333333333,
+  "direction": "up"
+}
+```
+
 Spark ML output is for demonstration and engineering validation only, not financial advice.
+
+### Scalability Notes
+
+- REST list endpoints are paginated (`limit`/`offset`) for bounded payloads.
+- `time_series` is protected by unique index (`assetId`, `dataSourceId`, `timestamp`) for idempotent ingestion and query stability.
+- Data can be exported as flattened JSONL (`spark_analytics export`) for Spark/DataFrame workloads.
+- Current scale path: scheduled JSONL exports + Spark jobs.
+- Future scale path: direct Spark MongoDB connector and scheduled batch orchestration.
 
 ## LLM assistant via MCP (UC4)
 
@@ -337,6 +430,15 @@ Behavior:
 - If MCP is enabled but `LLM_API_KEY` and `LLM_MODEL` are absent, the assistant uses deterministic fallback planning with the same grounded read-only tools.
 - If only one of `LLM_API_KEY` or `LLM_MODEL` is set, the endpoint returns HTTP 503 with an actionable configuration message.
 - If OpenRouter is configured but a timeout/network error occurs, the assistant falls back to deterministic planning instead of making unsupported claims.
+- Unknown or malformed LLM tool calls are rejected, then deterministic fallback planning is used.
+- Deterministic guardrails override LLM tool selection for obvious price, analytics summary, forecast, and quality-freshness questions.
+
+Guardrail test coverage includes:
+
+- malformed tool-call argument payloads
+- unknown tool names
+- empty tool results without fabricated numeric values
+- LLM final-response failure fallback without hallucinated values
 
 Sample request:
 
@@ -398,3 +500,17 @@ Statuses:
 - `grounded` — answer was formed from read-only tool results
 - `insufficient_data` — the assistant needs an asset/source/date range or no matching data was found
 - `error` — assistant execution failed or MCP is unavailable
+
+## Demo Checklist
+
+- Run ingest: `python ingestion_service.py --symbol TSLA`
+- Check paginated assets: `GET /assets?limit=2&offset=0`
+- Check paginated data sources: `GET /data-sources?limit=2&offset=0`
+- Check analytics summary: `GET /analytics/summary?assetId=TSLA&dataSourceId=alpha_vantage_api_v1`
+- Run Spark aggregate:
+  - `.venv/bin/python -m src.spark_analytics aggregate --input data/time_series_export.sample.jsonl --output data/spark_aggregations`
+- Run Spark forecast:
+  - `.venv/bin/python -m src.spark_analytics forecast --input data/time_series_export.sample.jsonl --asset-id TSLA --data-source-id alpha_vantage_api_v1`
+- Run verification:
+  - `.venv/bin/python -m pytest`
+  - `.venv/bin/python -m ruff check .`

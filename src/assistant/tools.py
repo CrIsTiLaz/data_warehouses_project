@@ -7,7 +7,8 @@ from typing import Any
 from analytics import flatten_time_series_rows, forecast_next_close, summarize_time_series
 from bson import ObjectId
 from pymongo.database import Database
-from quality import DEFAULT_FRESHNESS_THRESHOLD_HOURS, compute_freshness, detect_duplicate_risk, latest_ingestion_run
+from quality import DEFAULT_FRESHNESS_THRESHOLD_HOURS
+from repositories import AssetRepository, DataSourceRepository, QualityRepository, TimeSeriesRepository
 
 
 def serialize_mongo(value: Any) -> Any:
@@ -25,6 +26,10 @@ def serialize_mongo(value: Any) -> Any:
 class DwhReadOnlyTools:
     def __init__(self, db: Database) -> None:
         self.db = db
+        self.assets = AssetRepository(db)
+        self.data_sources = DataSourceRepository(db)
+        self.time_series = TimeSeriesRepository(db)
+        self.quality = QualityRepository(db)
 
     def registry(self) -> dict[str, Callable[..., dict[str, Any]]]:
         return {
@@ -161,50 +166,40 @@ class DwhReadOnlyTools:
         ]
 
     def list_assets(self) -> dict[str, Any]:
-        docs = self.db["assets"].find(
-            {"is_active": True},
-            projection={"_id": 0, "assetId": 1, "version": 1},
-        ).sort([("assetId", 1), ("version", -1)])
-        seen: set[str] = set()
-        asset_ids: list[str] = []
-        for doc in docs:
-            asset_id = doc.get("assetId")
-            if asset_id is not None and str(asset_id) not in seen:
-                seen.add(str(asset_id))
-                asset_ids.append(str(asset_id))
+        page = self.assets.list_active_asset_ids(limit=500, offset=0)
+        asset_ids = page["assetIds"]
         return {
             "assetIds": asset_ids,
+            "count": page["count"],
+            "total": page["total"],
+            "limit": page["limit"],
+            "offset": page["offset"],
             "provenance": {"endpoint": "GET /assets", "collection": "assets", "filter": {"is_active": True}},
         }
 
     def get_asset(self, asset_id: str) -> dict[str, Any]:
         query = {"assetId": asset_id, "is_active": True}
-        doc = self.db["assets"].find_one(query, sort=[("version", -1)])
+        doc = self.assets.get_active_asset(asset_id)
         return {
             "asset": serialize_mongo(doc),
             "provenance": {"endpoint": f"GET /assets/{asset_id}", "collection": "assets", "filter": query},
         }
 
     def list_data_sources(self) -> dict[str, Any]:
-        docs = self.db["data_sources"].find(
-            {},
-            projection={"_id": 0, "sourceId": 1, "version": 1},
-        ).sort([("sourceId", 1), ("version", -1)])
-        seen: set[str] = set()
-        source_ids: list[str] = []
-        for doc in docs:
-            source_id = doc.get("sourceId")
-            if source_id is not None and str(source_id) not in seen:
-                seen.add(str(source_id))
-                source_ids.append(str(source_id))
+        page = self.data_sources.list_source_ids(limit=500, offset=0)
+        source_ids = page["dataSourceIds"]
         return {
             "dataSourceIds": source_ids,
+            "count": page["count"],
+            "total": page["total"],
+            "limit": page["limit"],
+            "offset": page["offset"],
             "provenance": {"endpoint": "GET /data-sources", "collection": "data_sources", "filter": {}},
         }
 
     def get_data_source(self, source_id: str) -> dict[str, Any]:
         query = {"sourceId": source_id}
-        doc = self.db["data_sources"].find_one(query, sort=[("version", -1)])
+        doc = self.data_sources.get_data_source(source_id)
         return {
             "dataSource": serialize_mongo(doc),
             "provenance": {
@@ -221,15 +216,21 @@ class DwhReadOnlyTools:
         start_date: str | None = None,
         end_date: str | None = None,
     ) -> dict[str, Any]:
+        start: date | None = None
+        end: date | None = None
         query: dict[str, Any] = {"assetId": asset_id, "dataSourceId": data_source_id}
-        timestamp_filter: dict[str, str] = {}
         if start_date:
-            timestamp_filter["$gte"] = f"{start_date}T00:00:00Z"
+            start = date.fromisoformat(start_date)
+            query.setdefault("timestamp", {})["$gte"] = f"{start_date}T00:00:00Z"
         if end_date:
-            timestamp_filter["$lte"] = f"{end_date}T23:59:59Z"
-        if timestamp_filter:
-            query["timestamp"] = timestamp_filter
-        points = list(self.db["time_series"].find(query).sort("timestamp", 1))
+            end = date.fromisoformat(end_date)
+            query.setdefault("timestamp", {})["$lte"] = f"{end_date}T23:59:59Z"
+        points = self.time_series.query_points(
+            asset_id=asset_id,
+            data_source_id=data_source_id,
+            start_date=start,
+            end_date=end,
+        )
         return {
             "assetId": asset_id,
             "dataSourceId": data_source_id,
@@ -249,16 +250,21 @@ class DwhReadOnlyTools:
         start_date: str | None = None,
         end_date: str | None = None,
     ) -> dict[str, Any]:
+        start: date | None = None
+        end: date | None = None
         query: dict[str, Any] = {"assetId": asset_id, "dataSourceId": data_source_id}
-        timestamp_filter: dict[str, str] = {}
         if start_date:
-            timestamp_filter["$gte"] = f"{start_date}T00:00:00Z"
+            start = date.fromisoformat(start_date)
+            query.setdefault("timestamp", {})["$gte"] = f"{start_date}T00:00:00Z"
         if end_date:
-            timestamp_filter["$lte"] = f"{end_date}T23:59:59Z"
-        if timestamp_filter:
-            query["timestamp"] = timestamp_filter
-
-        points = list(self.db["time_series"].find(query).sort("timestamp", 1))
+            end = date.fromisoformat(end_date)
+            query.setdefault("timestamp", {})["$lte"] = f"{end_date}T23:59:59Z"
+        points = self.time_series.query_points(
+            asset_id=asset_id,
+            data_source_id=data_source_id,
+            start_date=start,
+            end_date=end,
+        )
         summary = summarize_time_series(points)
         response: dict[str, Any] = {
             "assetId": asset_id,
@@ -285,16 +291,21 @@ class DwhReadOnlyTools:
         end_date: str | None = None,
         window: int = 10,
     ) -> dict[str, Any]:
+        start: date | None = None
+        end: date | None = None
         query: dict[str, Any] = {"assetId": asset_id, "dataSourceId": data_source_id}
-        timestamp_filter: dict[str, str] = {}
         if start_date:
-            timestamp_filter["$gte"] = f"{start_date}T00:00:00Z"
+            start = date.fromisoformat(start_date)
+            query.setdefault("timestamp", {})["$gte"] = f"{start_date}T00:00:00Z"
         if end_date:
-            timestamp_filter["$lte"] = f"{end_date}T23:59:59Z"
-        if timestamp_filter:
-            query["timestamp"] = timestamp_filter
-
-        points = list(self.db["time_series"].find(query).sort("timestamp", 1))
+            end = date.fromisoformat(end_date)
+            query.setdefault("timestamp", {})["$lte"] = f"{end_date}T23:59:59Z"
+        points = self.time_series.query_points(
+            asset_id=asset_id,
+            data_source_id=data_source_id,
+            start_date=start,
+            end_date=end,
+        )
         response: dict[str, Any] = {
             "assetId": asset_id,
             "dataSourceId": data_source_id,
@@ -318,16 +329,21 @@ class DwhReadOnlyTools:
         start_date: str | None = None,
         end_date: str | None = None,
     ) -> dict[str, Any]:
+        start: date | None = None
+        end: date | None = None
         query: dict[str, Any] = {"assetId": asset_id, "dataSourceId": data_source_id}
-        timestamp_filter: dict[str, str] = {}
         if start_date:
-            timestamp_filter["$gte"] = f"{start_date}T00:00:00Z"
+            start = date.fromisoformat(start_date)
+            query.setdefault("timestamp", {})["$gte"] = f"{start_date}T00:00:00Z"
         if end_date:
-            timestamp_filter["$lte"] = f"{end_date}T23:59:59Z"
-        if timestamp_filter:
-            query["timestamp"] = timestamp_filter
-
-        points = list(self.db["time_series"].find(query).sort("timestamp", 1))
+            end = date.fromisoformat(end_date)
+            query.setdefault("timestamp", {})["$lte"] = f"{end_date}T23:59:59Z"
+        points = self.time_series.query_points(
+            asset_id=asset_id,
+            data_source_id=data_source_id,
+            start_date=start,
+            end_date=end,
+        )
         rows = flatten_time_series_rows(points)
         return serialize_mongo(
             {
@@ -347,7 +363,7 @@ class DwhReadOnlyTools:
         self,
         threshold_hours: int = DEFAULT_FRESHNESS_THRESHOLD_HOURS,
     ) -> dict[str, Any]:
-        rows = compute_freshness(self.db["time_series"], threshold_hours=threshold_hours)
+        rows = self.quality.compute_freshness_rows(threshold_hours=threshold_hours)
         return {
             "thresholdHours": threshold_hours,
             "count": len(rows),
@@ -360,10 +376,10 @@ class DwhReadOnlyTools:
         }
 
     def get_quality_summary(self) -> dict[str, Any]:
-        latest_run = latest_ingestion_run(self.db["ingestion_runs"])
+        latest_run = self.quality.latest_ingestion()
         return {
-            "totalTimeSeriesRows": self.db["time_series"].count_documents({}),
-            "duplicateRisk": detect_duplicate_risk(self.db["time_series"]),
+            "totalTimeSeriesRows": self.quality.total_time_series_rows(),
+            "duplicateRisk": self.quality.duplicate_risk(),
             "invalidRowsSkippedLatestRun": int(latest_run.get("invalidRowsSkipped", 0)) if latest_run else 0,
             "latestIngestionRun": serialize_mongo(latest_run),
             "provenance": {

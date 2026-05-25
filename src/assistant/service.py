@@ -100,6 +100,11 @@ class AssistantService:
                 "tool_choice": "auto",
             }
         )
+        allowed_tool_names = {
+            (spec.get("function") or {}).get("name")
+            for spec in self.adapter.tool_specs()
+            if isinstance((spec.get("function") or {}).get("name"), str)
+        }
         message = self._first_message(first)
         raw_tool_calls = message.get("tool_calls")
         tool_calls = raw_tool_calls if isinstance(raw_tool_calls, list) else []
@@ -109,13 +114,31 @@ class AssistantService:
             return self._answer_with_fallback(question, context)
 
         messages.append(message)
+        rejected_tool_calls = 0
         for tool_call in tool_calls:
             function = tool_call.get("function") or {}
             tool_name = function.get("name")
             if not isinstance(tool_name, str):
+                rejected_tool_calls += 1
                 continue
-            arguments = self._parse_tool_arguments(function.get("arguments"))
-            result = self.adapter.execute_tool(tool_name, arguments)
+            if tool_name not in allowed_tool_names:
+                rejected_tool_calls += 1
+                continue
+            try:
+                arguments = self._parse_tool_arguments(function.get("arguments"))
+            except RuntimeError:
+                rejected_tool_calls += 1
+                continue
+            try:
+                result = self.adapter.execute_tool(tool_name, arguments)
+            except MCPUnavailableError:
+                raise
+            except ValueError:
+                rejected_tool_calls += 1
+                continue
+            except RuntimeError:
+                rejected_tool_calls += 1
+                continue
             planned = PlannedToolCall(tool_name, arguments)
             results.append((planned, result))
             grounding.append(self._grounding_for(planned, result))
@@ -129,6 +152,20 @@ class AssistantService:
             )
 
         if not results:
+            if rejected_tool_calls > 0:
+                fallback = self._answer_with_fallback(question, context)
+                if fallback.status == "grounded":
+                    return fallback
+                return AssistantQueryResponse(
+                    answer=(
+                        "The LLM returned unsupported or malformed tool calls. "
+                        f"Rejected {rejected_tool_calls} call(s) and used deterministic fallback. "
+                        f"{fallback.answer}"
+                    ),
+                    status=fallback.status,
+                    grounding=fallback.grounding,
+                    clarificationNeeded=fallback.clarificationNeeded,
+                )
             return self._answer_with_fallback(question, context)
 
         fallback_response = self._compose_answer(question, results, grounding)
@@ -222,6 +259,8 @@ class AssistantService:
 
     def _guardrail_plan(self, question: str, context: dict[str, Any]) -> list[PlannedToolCall] | None:
         lower = question.lower()
+        if "quality" in lower or "freshness" in lower or "stale" in lower:
+            return self._plan(question, context)
         if not (
             self._is_time_series_question(lower)
             or self._is_analytics_summary_question(lower)
@@ -263,6 +302,10 @@ class AssistantService:
             return "get_analytics_summary" not in llm_names
         if guardrail_names == ["get_analytics_forecast"]:
             return "get_analytics_forecast" not in llm_names
+        if guardrail_names == ["get_quality_summary"]:
+            return "get_quality_summary" not in llm_names
+        if guardrail_names == ["get_quality_freshness"]:
+            return "get_quality_freshness" not in llm_names
         if guardrail_names == ["list_assets", "list_data_sources"]:
             return not {"list_assets", "list_data_sources"}.issubset(llm_names)
         return False
@@ -480,7 +523,10 @@ class AssistantService:
         if isinstance(raw, dict):
             return raw
         if isinstance(raw, str):
-            parsed = json.loads(raw)
+            try:
+                parsed = json.loads(raw)
+            except ValueError as exc:
+                raise RuntimeError("LLM returned malformed tool arguments.") from exc
             if isinstance(parsed, dict):
                 return parsed
         raise RuntimeError("LLM returned malformed tool arguments.")

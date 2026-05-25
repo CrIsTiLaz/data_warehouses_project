@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any
 
 from analytics import (
-    build_time_series_query,
     flatten_time_series_rows,
     forecast_next_close,
     summarize_time_series,
@@ -20,14 +19,18 @@ from assistant.tools import DwhReadOnlyTools
 from bson import ObjectId
 from quality import (
     DEFAULT_FRESHNESS_THRESHOLD_HOURS,
-    compute_freshness,
-    detect_duplicate_risk,
-    latest_ingestion_run,
 )
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from pymongo import MongoClient
 from pymongo.database import Database
+from repositories import (
+    AnalyticsRepository,
+    AssetRepository,
+    DataSourceRepository,
+    QualityRepository,
+    TimeSeriesRepository,
+)
 
 DEFAULT_DB_NAME = "acme_financial_dw"
 _ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
@@ -119,58 +122,38 @@ def get_assistant_service(db: Database = Depends(get_db)) -> AssistantService:
 
 
 @app.get("/assets")
-def list_assets(db: Database = Depends(get_db)) -> dict[str, list[str]]:
-    docs = db["assets"].find(
-        {"is_active": True},
-        projection={"_id": 0, "assetId": 1, "version": 1},
-    ).sort([("assetId", 1), ("version", -1)])
-
-    asset_ids: list[str] = []
-    seen: set[str] = set()
-    for doc in docs:
-        asset_id = doc.get("assetId")
-        if asset_id is not None and asset_id not in seen:
-            value = str(asset_id)
-            seen.add(value)
-            asset_ids.append(value)
-    return {"assetIds": asset_ids}
+def list_assets(
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    db: Database = Depends(get_db),
+) -> dict[str, Any]:
+    repo = AssetRepository(db)
+    return repo.list_active_asset_ids(limit=limit, offset=offset)
 
 
 @app.get("/assets/{asset_id}")
 def get_asset(asset_id: str, db: Database = Depends(get_db)) -> dict[str, Any]:
-    doc = db["assets"].find_one(
-        {"assetId": asset_id, "is_active": True},
-        sort=[("version", -1)],
-    )
+    repo = AssetRepository(db)
+    doc = repo.get_active_asset(asset_id)
     if doc is None:
         raise HTTPException(status_code=404, detail=f"Asset {asset_id!r} was not found.")
     return serialize_mongo(doc)
 
 
 @app.get("/data-sources")
-def list_data_sources(db: Database = Depends(get_db)) -> dict[str, list[str]]:
-    docs = db["data_sources"].find(
-        {},
-        projection={"_id": 0, "sourceId": 1, "version": 1},
-    ).sort([("sourceId", 1), ("version", -1)])
-
-    source_ids: list[str] = []
-    seen: set[str] = set()
-    for doc in docs:
-        source_id = doc.get("sourceId")
-        if source_id is not None and source_id not in seen:
-            value = str(source_id)
-            seen.add(value)
-            source_ids.append(value)
-    return {"dataSourceIds": source_ids}
+def list_data_sources(
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    db: Database = Depends(get_db),
+) -> dict[str, Any]:
+    repo = DataSourceRepository(db)
+    return repo.list_source_ids(limit=limit, offset=offset)
 
 
 @app.get("/data-sources/{source_id}")
 def get_data_source(source_id: str, db: Database = Depends(get_db)) -> dict[str, Any]:
-    doc = db["data_sources"].find_one(
-        {"sourceId": source_id},
-        sort=[("version", -1)],
-    )
+    repo = DataSourceRepository(db)
+    doc = repo.get_data_source(source_id)
     if doc is None:
         raise HTTPException(
             status_code=404,
@@ -197,16 +180,13 @@ def get_time_series(
     if start_date and end_date and start_date > end_date:
         raise HTTPException(status_code=400, detail="startDate must be on or before endDate.")
 
-    query: dict[str, Any] = {"assetId": asset_id, "dataSourceId": data_source_id}
-    timestamp_filter: dict[str, str] = {}
-    if start_date is not None:
-        timestamp_filter["$gte"] = f"{start_date.isoformat()}T00:00:00Z"
-    if end_date is not None:
-        timestamp_filter["$lte"] = f"{end_date.isoformat()}T23:59:59Z"
-    if timestamp_filter:
-        query["timestamp"] = timestamp_filter
-
-    points = list(db["time_series"].find(query).sort("timestamp", 1))
+    repo = TimeSeriesRepository(db)
+    points = repo.query_points(
+        asset_id=asset_id,
+        data_source_id=data_source_id,
+        start_date=start_date,
+        end_date=end_date,
+    )
     if not points:
         raise HTTPException(
             status_code=404,
@@ -233,18 +213,20 @@ def get_quality_freshness(
     ),
     db: Database = Depends(get_db),
 ) -> dict[str, Any]:
-    rows = compute_freshness(db["time_series"], threshold_hours=threshold_hours)
+    repo = QualityRepository(db)
+    rows = repo.compute_freshness_rows(threshold_hours=threshold_hours)
     return {"thresholdHours": threshold_hours, "count": len(rows), "items": serialize_mongo(rows)}
 
 
 @app.get("/quality/summary")
 def get_quality_summary(db: Database = Depends(get_db)) -> dict[str, Any]:
-    latest_run = latest_ingestion_run(db["ingestion_runs"])
-    duplicate_risk = detect_duplicate_risk(db["time_series"])
+    repo = QualityRepository(db)
+    latest_run = repo.latest_ingestion()
+    duplicate_risk = repo.duplicate_risk()
     invalid_rows = int(latest_run.get("invalidRowsSkipped", 0)) if latest_run else 0
 
     return {
-        "totalTimeSeriesRows": db["time_series"].count_documents({}),
+        "totalTimeSeriesRows": repo.total_time_series_rows(),
         "duplicateRisk": duplicate_risk,
         "invalidRowsSkippedLatestRun": invalid_rows,
         "latestIngestionRun": serialize_mongo(latest_run),
@@ -269,8 +251,13 @@ def get_analytics_summary(
     if start_date and end_date and start_date > end_date:
         raise HTTPException(status_code=400, detail="startDate must be on or before endDate.")
 
-    query = build_time_series_query(asset_id, data_source_id, start_date, end_date)
-    points = list(db["time_series"].find(query).sort("timestamp", 1))
+    repo = AnalyticsRepository(db)
+    points = repo.query_points(
+        asset_id=asset_id,
+        data_source_id=data_source_id,
+        start_date=start_date,
+        end_date=end_date,
+    )
     if not points:
         raise HTTPException(
             status_code=404,
@@ -319,8 +306,13 @@ def get_analytics_forecast(
     if start_date and end_date and start_date > end_date:
         raise HTTPException(status_code=400, detail="startDate must be on or before endDate.")
 
-    query = build_time_series_query(asset_id, data_source_id, start_date, end_date)
-    points = list(db["time_series"].find(query).sort("timestamp", 1))
+    repo = AnalyticsRepository(db)
+    points = repo.query_points(
+        asset_id=asset_id,
+        data_source_id=data_source_id,
+        start_date=start_date,
+        end_date=end_date,
+    )
     if not points:
         raise HTTPException(
             status_code=404,
@@ -366,8 +358,13 @@ def get_analytics_spark_shape(
     if start_date and end_date and start_date > end_date:
         raise HTTPException(status_code=400, detail="startDate must be on or before endDate.")
 
-    query = build_time_series_query(asset_id, data_source_id, start_date, end_date)
-    points = list(db["time_series"].find(query).sort("timestamp", 1))
+    repo = AnalyticsRepository(db)
+    points = repo.query_points(
+        asset_id=asset_id,
+        data_source_id=data_source_id,
+        start_date=start_date,
+        end_date=end_date,
+    )
     if not points:
         raise HTTPException(
             status_code=404,

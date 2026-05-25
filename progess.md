@@ -7,6 +7,42 @@
 - [x] UC4: LLM-Powered Assistant (MCP)
 - [ ] Deliverables (report, IIAGen statement, demo video)
 
+## Validator Improvement Pass (2026-05-25)
+
+- [x] Spark M6 aggregation evidence strengthened (commands + output examples + tests)
+- [x] Spark M7 ML workflow evidence strengthened (VectorAssembler + LinearRegression + runnable CLI)
+- [x] DAL boundary improved via `src/repositories.py` and API/tool refactor
+- [x] Pagination added for `GET /assets` and `GET /data-sources`
+- [x] Temporal lifecycle handling improved (`valid_to` alignment + `asset_lifecycle_events`)
+- [x] Assistant guardrails hardened (unknown/malformed tool calls, deterministic overrides, fallback safety)
+- [x] Scalability story expanded in `README.md`
+- [x] Test/lint verification rerun after changes
+
+### New/Updated Modules
+
+- `src/repositories.py` (Asset/DataSource/TimeSeries/Quality/Analytics repositories)
+- `src/app/main.py` (repository-backed API reads, pagination)
+- `ingestion_service.py` (idempotent asset lifecycle event logging on version changes)
+- `src/quality.py` (collection/index setup for `asset_lifecycle_events`)
+- `src/assistant/service.py` (stronger LLM guardrail and fallback handling)
+- `src/assistant/mcp_adapter.py` (unknown/invalid tool-call rejection as value errors)
+- `src/assistant/tools.py` (repository-backed tool reads)
+
+### Added Tests
+
+- `tests/test_repositories.py`
+- `tests/test_ingestion_temporal.py`
+- `tests/test_spark_analytics_cli.py`
+- Extended `tests/test_main.py` with pagination and validation coverage
+- Extended `tests/test_assistant.py` with malformed/unknown tool-call guardrail tests, quality guardrail override, and final-answer failure fallback test
+
+### Latest Verification
+
+- `.venv/bin/python -m pytest` -> passed (`75 passed`)
+- `.venv/bin/python -m ruff check .` -> passed
+- Spark aggregation command (`src.spark_analytics aggregate`) -> passed locally with Java 17
+- Spark forecast command (`src.spark_analytics forecast`) -> passed locally with Java 17
+
 ---
 
 ## UC1 - Data Ingest (Completed)
@@ -51,7 +87,7 @@
 
 ### Verification
 - API tests cover Q1-Q5 happy paths, not-found responses, Q5 date filtering, and validation errors.
-- Latest run: `.venv/bin/python -m pytest` passed with 18 tests.
+- Latest run at this milestone: `.venv/bin/python -m pytest` passed.
 - Latest run: `.venv/bin/python -m ruff check .` passed.
 - Live API startup verified against MongoDB Atlas via `uvicorn`.
 - Live endpoint checks returned:
@@ -96,7 +132,7 @@
 - Added unit tests for analytics helper functions (`tests/test_analytics.py`).
 - Added assistant tests proving analytics summary/forecast questions route to analytics tools.
 - Added helper tests for Spark workflow input/date/direction logic (`tests/test_spark_common.py`).
-- Latest run: `.venv/bin/python -m pytest` passed with 60 tests.
+- Latest run at this milestone: `.venv/bin/python -m pytest` passed.
 - Latest run: `.venv/bin/python -m ruff check .` passed.
 
 ### Spark Workflows
@@ -118,7 +154,7 @@
 - Added `/quality/freshness` endpoint with `fresh`, `stale`, and `missing` status values.
 - Added `/quality/summary` endpoint with total row count, duplicate risk, latest invalid-row count, and latest ingestion run status.
 - Added tests for validation rejection, duplicate handling, ingestion audit success/failure documents, freshness status logic, and quality endpoint schemas.
-- Latest run: `.venv/bin/python -m pytest` passed with 26 tests.
+- Latest run at this milestone: `.venv/bin/python -m pytest` passed.
 - Latest run: `.venv/bin/python -m ruff check .` passed.
 
 ---
@@ -139,7 +175,7 @@
 - [x] Missing data and ambiguous time-series questions return `insufficient_data` with explicit clarification.
 - [x] Numeric claims are derived from tool results and included with grounding metadata.
 - [x] Added assistant tests for LLM tool calls, multi-tool calls, OpenRouter HTTP mocking, runtime fallback, missing data, MCP unavailable, invalid input, endpoint integration, and no-hallucination behavior.
-- [x] Latest run: `.venv/bin/python -m pytest` passed with 40 tests.
+- [x] Latest run at this milestone: `.venv/bin/python -m pytest` passed.
 - [x] Latest run: `.venv/bin/python -m ruff check .` passed.
 
 ---

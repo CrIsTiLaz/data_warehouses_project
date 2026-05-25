@@ -144,7 +144,13 @@ def insert_valid_time_series_documents(
 
 
 def ensure_quality_collections_and_indexes(db: Database) -> None:
-    required = {"assets", "time_series", "data_sources", "ingestion_runs"}
+    required = {
+        "assets",
+        "time_series",
+        "data_sources",
+        "ingestion_runs",
+        "asset_lifecycle_events",
+    }
     existing = set(db.list_collection_names())
     for name in sorted(required - existing):
         db.create_collection(name)
@@ -159,6 +165,15 @@ def ensure_quality_collections_and_indexes(db: Database) -> None:
         name="uq_time_series_asset_source_timestamp",
     )
     db["ingestion_runs"].create_index([("startedAt", ASCENDING)], name="ix_ingestion_runs_started")
+    db["asset_lifecycle_events"].create_index(
+        [("eventId", ASCENDING)],
+        unique=True,
+        name="uq_asset_lifecycle_event_id",
+    )
+    db["asset_lifecycle_events"].create_index(
+        [("assetId", ASCENDING), ("recordedAt", ASCENDING)],
+        name="ix_asset_lifecycle_asset_recorded",
+    )
 
 
 def compute_freshness(

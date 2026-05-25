@@ -131,11 +131,11 @@ class LocalMCPAdapter(MCPAdapter):
         self._ensure_available()
         tool = self.tools.get(tool_name)
         if tool is None:
-            raise MCPUnavailableError(f"Unknown assistant tool: {tool_name}")
+            raise ValueError(f"Unknown assistant tool: {tool_name}")
         try:
             return tool(**arguments)
         except TypeError as exc:
-            raise MCPUnavailableError(f"Invalid arguments for assistant tool {tool_name}: {exc}") from exc
+            raise ValueError(f"Invalid arguments for assistant tool {tool_name}: {exc}") from exc
 
 
 class OpenRouterClient:
