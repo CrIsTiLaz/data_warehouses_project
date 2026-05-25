@@ -109,6 +109,9 @@ Endpoints:
 - `GET /data-sources` → `{ "dataSourceIds": ["alpha_vantage_api_v1"] }`
 - `GET /data-sources/{source_id}` → full data source details
 - `GET /time-series?assetId=TSLA&dataSourceId=alpha_vantage_api_v1` → matching rows sorted by `timestamp`
+- `GET /analytics/summary?assetId=TSLA&dataSourceId=alpha_vantage_api_v1` → min/max/average metrics
+- `GET /analytics/forecast?assetId=TSLA&dataSourceId=alpha_vantage_api_v1` → deterministic trend forecast
+- `GET /analytics/spark-shape?assetId=TSLA&dataSourceId=alpha_vantage_api_v1` → flattened analytics-friendly rows
 - `GET /quality/freshness` → latest timestamp and lag per (`assetId`, `dataSourceId`)
 - `GET /quality/summary` → row count, duplicate risk, and latest ingestion run status
 - `POST /assistant/query` → grounded assistant response using read-only DWH tools
@@ -122,6 +125,9 @@ curl "http://127.0.0.1:8000/data-sources"
 curl "http://127.0.0.1:8000/data-sources/alpha_vantage_api_v1"
 curl "http://127.0.0.1:8000/time-series?assetId=TSLA&dataSourceId=alpha_vantage_api_v1"
 curl "http://127.0.0.1:8000/time-series?assetId=TSLA&dataSourceId=alpha_vantage_api_v1&startDate=2026-05-01&endDate=2026-05-10"
+curl "http://127.0.0.1:8000/analytics/summary?assetId=TSLA&dataSourceId=alpha_vantage_api_v1"
+curl "http://127.0.0.1:8000/analytics/forecast?assetId=TSLA&dataSourceId=alpha_vantage_api_v1"
+curl "http://127.0.0.1:8000/analytics/spark-shape?assetId=TSLA&dataSourceId=alpha_vantage_api_v1&startDate=2026-05-01&endDate=2026-05-10"
 curl "http://127.0.0.1:8000/quality/freshness"
 curl "http://127.0.0.1:8000/quality/freshness?thresholdHours=48"
 curl "http://127.0.0.1:8000/quality/summary"
@@ -132,6 +138,85 @@ Freshness statuses:
 - `fresh` — latest timestamp is within the threshold, default 24 hours
 - `stale` — latest timestamp is older than the threshold
 - `missing` — no valid UTC latest timestamp is available for that pair
+
+## Analytics & data mining (UC3)
+
+UC3 adds deterministic, read-only analytics on `time_series` rows:
+
+- Summary metrics endpoint for min/max/average (`close` required, plus `open`/`high`/`low`/`volume` when available)
+- Basic trend forecast endpoint from recent `close` values
+- Spark-friendly flattened row endpoint for direct DataFrame ingestion
+
+All analytics endpoints support:
+
+- `assetId` and `dataSourceId` (required)
+- `startDate` and `endDate` in `YYYY-MM-DD` (optional)
+
+Validation behavior:
+
+- Missing `assetId` or `dataSourceId` → HTTP 400
+- Invalid date format → HTTP 400
+- `startDate > endDate` → HTTP 400
+- No matching rows → HTTP 404
+
+Summary example response:
+
+```json
+{
+  "assetId": "TSLA",
+  "dataSourceId": "alpha_vantage_api_v1",
+  "count": 105,
+  "dateRange": {
+    "start": "2026-01-01T00:00:00Z",
+    "end": "2026-05-08T00:00:00Z"
+  },
+  "close": {
+    "min": 221.86,
+    "max": 428.35,
+    "average": 312.45
+  }
+}
+```
+
+Forecast example response:
+
+```json
+{
+  "assetId": "TSLA",
+  "dataSourceId": "alpha_vantage_api_v1",
+  "basis": "last_10_close_values",
+  "latestTimestamp": "2026-05-08T00:00:00Z",
+  "latestClose": 428.35,
+  "averageDailyChange": 2.15,
+  "forecast": {
+    "nextPeriodClose": 430.5,
+    "direction": "up"
+  },
+  "note": "Simple deterministic trend estimate from historical close values only. Not financial advice."
+}
+```
+
+Spark-shape example response:
+
+```json
+{
+  "assetId": "TSLA",
+  "dataSourceId": "alpha_vantage_api_v1",
+  "count": 105,
+  "rows": [
+    {
+      "assetId": "TSLA",
+      "dataSourceId": "alpha_vantage_api_v1",
+      "timestamp": "2026-05-08T00:00:00Z",
+      "open": 420.1,
+      "high": 431.2,
+      "low": 418.9,
+      "close": 428.35,
+      "volume": 1234567
+    }
+  ]
+}
+```
 
 ## LLM assistant via MCP (UC4)
 

@@ -148,6 +148,55 @@ def test_assistant_missing_data_returns_insufficient_data_without_numbers() -> N
     assert "999" not in response.answer
 
 
+def test_assistant_analytics_summary_question_routes_to_summary_tool() -> None:
+    adapter = FakeAdapter(
+        {
+            "get_analytics_summary": {
+                "assetId": "TSLA",
+                "dataSourceId": "alpha_vantage_api_v1",
+                "count": 2,
+                "dateRange": {"start": "2026-05-01T00:00:00Z", "end": "2026-05-02T00:00:00Z"},
+                "close": {"min": 105.5, "max": 107.0, "average": 106.25},
+                "provenance": {"endpoint": "GET /analytics/summary"},
+            }
+        }
+    )
+
+    response = AssistantService(adapter).answer(
+        "What is the min, max, and average close price for TSLA from alpha_vantage_api_v1?"
+    )
+
+    assert response.status == "grounded"
+    assert response.grounding[0].toolName == "get_analytics_summary"
+    assert "close min=105.5" in response.answer
+    assert adapter.calls[0][0] == "get_analytics_summary"
+
+
+def test_assistant_analytics_forecast_question_routes_to_forecast_tool() -> None:
+    adapter = FakeAdapter(
+        {
+            "get_analytics_forecast": {
+                "assetId": "TSLA",
+                "dataSourceId": "alpha_vantage_api_v1",
+                "count": 10,
+                "basis": "last_10_close_values",
+                "latestTimestamp": "2026-05-08T00:00:00Z",
+                "latestClose": 428.35,
+                "averageDailyChange": 2.15,
+                "forecast": {"nextPeriodClose": 430.5, "direction": "up"},
+                "provenance": {"endpoint": "GET /analytics/forecast"},
+            }
+        }
+    )
+
+    response = AssistantService(adapter).answer("What is the trend forecast for TSLA from alpha_vantage_api_v1?")
+
+    assert response.status == "grounded"
+    assert response.grounding[0].toolName == "get_analytics_forecast"
+    assert "Next period close estimate is 430.5 (up)." in response.answer
+    assert adapter.calls[0][0] == "get_analytics_forecast"
+
+
 def test_assistant_ambiguity_requests_clarification() -> None:
     adapter = FakeAdapter(
         {

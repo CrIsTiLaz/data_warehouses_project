@@ -7,6 +7,12 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
+from analytics import (
+    build_time_series_query,
+    flatten_time_series_rows,
+    forecast_next_close,
+    summarize_time_series,
+)
 from assistant.mcp_adapter import LocalMCPAdapter, MCPConfig, MCPUnavailableError
 from assistant.models import AssistantQueryRequest, AssistantQueryResponse
 from assistant.service import AssistantService
@@ -243,6 +249,143 @@ def get_quality_summary(db: Database = Depends(get_db)) -> dict[str, Any]:
         "invalidRowsSkippedLatestRun": invalid_rows,
         "latestIngestionRun": serialize_mongo(latest_run),
     }
+
+
+@app.get("/analytics/summary")
+def get_analytics_summary(
+    asset_id: str | None = Query(default=None, alias="assetId"),
+    data_source_id: str | None = Query(default=None, alias="dataSourceId"),
+    start_date_raw: str | None = Query(default=None, alias="startDate"),
+    end_date_raw: str | None = Query(default=None, alias="endDate"),
+    db: Database = Depends(get_db),
+) -> dict[str, Any]:
+    if not asset_id:
+        raise HTTPException(status_code=400, detail="assetId query parameter is required.")
+    if not data_source_id:
+        raise HTTPException(status_code=400, detail="dataSourceId query parameter is required.")
+
+    start_date = _parse_iso_date(start_date_raw, "startDate")
+    end_date = _parse_iso_date(end_date_raw, "endDate")
+    if start_date and end_date and start_date > end_date:
+        raise HTTPException(status_code=400, detail="startDate must be on or before endDate.")
+
+    query = build_time_series_query(asset_id, data_source_id, start_date, end_date)
+    points = list(db["time_series"].find(query).sort("timestamp", 1))
+    if not points:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "No time-series rows found for "
+                f"assetId={asset_id!r} and dataSourceId={data_source_id!r}."
+            ),
+        )
+
+    metric_summary = summarize_time_series(points)
+    close_summary = metric_summary.get("close")
+    if close_summary is None:
+        raise HTTPException(
+            status_code=404,
+            detail="No valid close values found for the requested time-series selection.",
+        )
+
+    payload: dict[str, Any] = {
+        "assetId": asset_id,
+        "dataSourceId": data_source_id,
+        "count": len(points),
+        "dateRange": {"start": points[0].get("timestamp"), "end": points[-1].get("timestamp")},
+        "close": close_summary,
+    }
+    for field_name in ("open", "high", "low", "volume"):
+        if field_name in metric_summary:
+            payload[field_name] = metric_summary[field_name]
+    return serialize_mongo(payload)
+
+
+@app.get("/analytics/forecast")
+def get_analytics_forecast(
+    asset_id: str | None = Query(default=None, alias="assetId"),
+    data_source_id: str | None = Query(default=None, alias="dataSourceId"),
+    start_date_raw: str | None = Query(default=None, alias="startDate"),
+    end_date_raw: str | None = Query(default=None, alias="endDate"),
+    db: Database = Depends(get_db),
+) -> dict[str, Any]:
+    if not asset_id:
+        raise HTTPException(status_code=400, detail="assetId query parameter is required.")
+    if not data_source_id:
+        raise HTTPException(status_code=400, detail="dataSourceId query parameter is required.")
+
+    start_date = _parse_iso_date(start_date_raw, "startDate")
+    end_date = _parse_iso_date(end_date_raw, "endDate")
+    if start_date and end_date and start_date > end_date:
+        raise HTTPException(status_code=400, detail="startDate must be on or before endDate.")
+
+    query = build_time_series_query(asset_id, data_source_id, start_date, end_date)
+    points = list(db["time_series"].find(query).sort("timestamp", 1))
+    if not points:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "No time-series rows found for "
+                f"assetId={asset_id!r} and dataSourceId={data_source_id!r}."
+            ),
+        )
+
+    try:
+        forecast = forecast_next_close(points, window=10)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    return serialize_mongo(
+        {
+            "assetId": asset_id,
+            "dataSourceId": data_source_id,
+            **forecast,
+            "note": (
+                "Simple deterministic trend estimate from historical close values only. "
+                "Not financial advice."
+            ),
+        }
+    )
+
+
+@app.get("/analytics/spark-shape")
+def get_analytics_spark_shape(
+    asset_id: str | None = Query(default=None, alias="assetId"),
+    data_source_id: str | None = Query(default=None, alias="dataSourceId"),
+    start_date_raw: str | None = Query(default=None, alias="startDate"),
+    end_date_raw: str | None = Query(default=None, alias="endDate"),
+    db: Database = Depends(get_db),
+) -> dict[str, Any]:
+    if not asset_id:
+        raise HTTPException(status_code=400, detail="assetId query parameter is required.")
+    if not data_source_id:
+        raise HTTPException(status_code=400, detail="dataSourceId query parameter is required.")
+
+    start_date = _parse_iso_date(start_date_raw, "startDate")
+    end_date = _parse_iso_date(end_date_raw, "endDate")
+    if start_date and end_date and start_date > end_date:
+        raise HTTPException(status_code=400, detail="startDate must be on or before endDate.")
+
+    query = build_time_series_query(asset_id, data_source_id, start_date, end_date)
+    points = list(db["time_series"].find(query).sort("timestamp", 1))
+    if not points:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "No time-series rows found for "
+                f"assetId={asset_id!r} and dataSourceId={data_source_id!r}."
+            ),
+        )
+
+    rows = flatten_time_series_rows(points)
+    return serialize_mongo(
+        {
+            "assetId": asset_id,
+            "dataSourceId": data_source_id,
+            "count": len(rows),
+            "rows": rows,
+        }
+    )
 
 
 @app.post("/assistant/query", response_model=AssistantQueryResponse)

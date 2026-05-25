@@ -327,3 +327,151 @@ def test_quality_summary_endpoint(client: TestClient) -> None:
     assert payload["duplicateRisk"] == {"hasDuplicates": False, "status": "ok"}
     assert payload["invalidRowsSkippedLatestRun"] == 1
     assert payload["latestIngestionRun"]["status"] == "success"
+
+
+def test_analytics_summary_happy_path(client: TestClient) -> None:
+    response = client.get(
+        "/analytics/summary",
+        params={"assetId": "TSLA", "dataSourceId": "alpha_vantage_api_v1"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["assetId"] == "TSLA"
+    assert payload["dataSourceId"] == "alpha_vantage_api_v1"
+    assert payload["count"] == 2
+    assert payload["dateRange"]["start"] == "2026-05-01T00:00:00Z"
+    assert payload["dateRange"]["end"] == "2026-05-02T00:00:00Z"
+    assert payload["close"]["min"] == 105.5
+    assert payload["close"]["max"] == 107.0
+    assert payload["close"]["average"] == pytest.approx(106.25)
+
+
+def test_analytics_summary_with_date_filter(client: TestClient) -> None:
+    response = client.get(
+        "/analytics/summary",
+        params={
+            "assetId": "TSLA",
+            "dataSourceId": "alpha_vantage_api_v1",
+            "startDate": "2026-05-02",
+            "endDate": "2026-05-02",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["count"] == 1
+    assert payload["close"]["min"] == 107.0
+    assert payload["close"]["max"] == 107.0
+    assert payload["close"]["average"] == 107.0
+
+
+def test_analytics_summary_validation_errors(client: TestClient) -> None:
+    missing_asset = client.get("/analytics/summary", params={"dataSourceId": "alpha_vantage_api_v1"})
+    missing_source = client.get("/analytics/summary", params={"assetId": "TSLA"})
+    invalid_date = client.get(
+        "/analytics/summary",
+        params={
+            "assetId": "TSLA",
+            "dataSourceId": "alpha_vantage_api_v1",
+            "startDate": "2026/05/01",
+        },
+    )
+    reversed_range = client.get(
+        "/analytics/summary",
+        params={
+            "assetId": "TSLA",
+            "dataSourceId": "alpha_vantage_api_v1",
+            "startDate": "2026-05-03",
+            "endDate": "2026-05-01",
+        },
+    )
+
+    assert missing_asset.status_code == 400
+    assert missing_asset.json()["detail"] == "assetId query parameter is required."
+    assert missing_source.status_code == 400
+    assert missing_source.json()["detail"] == "dataSourceId query parameter is required."
+    assert invalid_date.status_code == 400
+    assert invalid_date.json()["detail"] == "startDate must be an ISO date in YYYY-MM-DD format."
+    assert reversed_range.status_code == 400
+    assert reversed_range.json()["detail"] == "startDate must be on or before endDate."
+
+
+def test_analytics_summary_not_found(client: TestClient) -> None:
+    response = client.get(
+        "/analytics/summary",
+        params={"assetId": "BTC", "dataSourceId": "alpha_vantage_api_v1"},
+    )
+
+    assert response.status_code == 404
+    assert "No time-series rows found" in response.json()["detail"]
+
+
+def test_analytics_forecast_happy_path(client: TestClient) -> None:
+    response = client.get(
+        "/analytics/forecast",
+        params={"assetId": "TSLA", "dataSourceId": "alpha_vantage_api_v1"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["assetId"] == "TSLA"
+    assert payload["dataSourceId"] == "alpha_vantage_api_v1"
+    assert payload["basis"] == "last_2_close_values"
+    assert payload["latestTimestamp"] == "2026-05-02T00:00:00Z"
+    assert payload["latestClose"] == 107.0
+    assert payload["averageDailyChange"] == pytest.approx(1.5)
+    assert payload["forecast"]["nextPeriodClose"] == pytest.approx(108.5)
+    assert payload["forecast"]["direction"] == "up"
+    assert "Not financial advice" in payload["note"]
+
+
+def test_analytics_forecast_requires_at_least_two_closes(client: TestClient) -> None:
+    response = client.get(
+        "/analytics/forecast",
+        params={
+            "assetId": "TSLA",
+            "dataSourceId": "alpha_vantage_api_v1",
+            "startDate": "2026-05-02",
+            "endDate": "2026-05-02",
+        },
+    )
+
+    assert response.status_code == 422
+    assert "At least 2 valid close values are required" in response.json()["detail"]
+
+
+def test_analytics_spark_shape_happy_path(client: TestClient) -> None:
+    response = client.get(
+        "/analytics/spark-shape",
+        params={"assetId": "TSLA", "dataSourceId": "alpha_vantage_api_v1"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["assetId"] == "TSLA"
+    assert payload["dataSourceId"] == "alpha_vantage_api_v1"
+    assert payload["count"] == 2
+    first_row = payload["rows"][0]
+    assert first_row["assetId"] == "TSLA"
+    assert first_row["dataSourceId"] == "alpha_vantage_api_v1"
+    assert first_row["timestamp"] == "2026-05-01T00:00:00Z"
+    assert first_row["close"] == 105.5
+    assert set(first_row) == {"assetId", "dataSourceId", "timestamp", "open", "high", "low", "close", "volume"}
+
+
+def test_analytics_spark_shape_with_date_filter(client: TestClient) -> None:
+    response = client.get(
+        "/analytics/spark-shape",
+        params={
+            "assetId": "TSLA",
+            "dataSourceId": "alpha_vantage_api_v1",
+            "startDate": "2026-05-02",
+            "endDate": "2026-05-02",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["count"] == 1
+    assert payload["rows"][0]["timestamp"] == "2026-05-02T00:00:00Z"

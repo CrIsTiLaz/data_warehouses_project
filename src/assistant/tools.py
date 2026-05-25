@@ -4,6 +4,7 @@ from collections.abc import Callable
 from datetime import date, datetime
 from typing import Any
 
+from analytics import flatten_time_series_rows, forecast_next_close, summarize_time_series
 from bson import ObjectId
 from pymongo.database import Database
 from quality import DEFAULT_FRESHNESS_THRESHOLD_HOURS, compute_freshness, detect_duplicate_risk, latest_ingestion_run
@@ -32,6 +33,8 @@ class DwhReadOnlyTools:
             "list_data_sources": self.list_data_sources,
             "get_data_source": self.get_data_source,
             "query_time_series": self.query_time_series,
+            "get_analytics_summary": self.get_analytics_summary,
+            "get_analytics_forecast": self.get_analytics_forecast,
             "get_quality_freshness": self.get_quality_freshness,
             "get_quality_summary": self.get_quality_summary,
         }
@@ -92,6 +95,43 @@ class DwhReadOnlyTools:
                             "data_source_id": {"type": "string"},
                             "start_date": {"type": ["string", "null"]},
                             "end_date": {"type": ["string", "null"]},
+                        },
+                        "required": ["asset_id", "data_source_id"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_analytics_summary",
+                    "description": "Compute min/max/average metrics for selected time-series rows.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "asset_id": {"type": "string"},
+                            "data_source_id": {"type": "string"},
+                            "start_date": {"type": ["string", "null"]},
+                            "end_date": {"type": ["string", "null"]},
+                        },
+                        "required": ["asset_id", "data_source_id"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_analytics_forecast",
+                    "description": "Compute a simple deterministic next-close trend estimate.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "asset_id": {"type": "string"},
+                            "data_source_id": {"type": "string"},
+                            "start_date": {"type": ["string", "null"]},
+                            "end_date": {"type": ["string", "null"]},
+                            "window": {"type": "integer", "minimum": 2},
                         },
                         "required": ["asset_id", "data_source_id"],
                         "additionalProperties": False,
@@ -201,6 +241,107 @@ class DwhReadOnlyTools:
                 "filter": query,
             },
         }
+
+    def get_analytics_summary(
+        self,
+        asset_id: str,
+        data_source_id: str,
+        start_date: str | None = None,
+        end_date: str | None = None,
+    ) -> dict[str, Any]:
+        query: dict[str, Any] = {"assetId": asset_id, "dataSourceId": data_source_id}
+        timestamp_filter: dict[str, str] = {}
+        if start_date:
+            timestamp_filter["$gte"] = f"{start_date}T00:00:00Z"
+        if end_date:
+            timestamp_filter["$lte"] = f"{end_date}T23:59:59Z"
+        if timestamp_filter:
+            query["timestamp"] = timestamp_filter
+
+        points = list(self.db["time_series"].find(query).sort("timestamp", 1))
+        summary = summarize_time_series(points)
+        response: dict[str, Any] = {
+            "assetId": asset_id,
+            "dataSourceId": data_source_id,
+            "count": len(points),
+            "dateRange": {
+                "start": points[0].get("timestamp") if points else None,
+                "end": points[-1].get("timestamp") if points else None,
+            },
+            "provenance": {
+                "endpoint": "GET /analytics/summary",
+                "collection": "time_series",
+                "filter": query,
+            },
+        }
+        response.update(summary)
+        return serialize_mongo(response)
+
+    def get_analytics_forecast(
+        self,
+        asset_id: str,
+        data_source_id: str,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        window: int = 10,
+    ) -> dict[str, Any]:
+        query: dict[str, Any] = {"assetId": asset_id, "dataSourceId": data_source_id}
+        timestamp_filter: dict[str, str] = {}
+        if start_date:
+            timestamp_filter["$gte"] = f"{start_date}T00:00:00Z"
+        if end_date:
+            timestamp_filter["$lte"] = f"{end_date}T23:59:59Z"
+        if timestamp_filter:
+            query["timestamp"] = timestamp_filter
+
+        points = list(self.db["time_series"].find(query).sort("timestamp", 1))
+        response: dict[str, Any] = {
+            "assetId": asset_id,
+            "dataSourceId": data_source_id,
+            "count": len(points),
+            "provenance": {
+                "endpoint": "GET /analytics/forecast",
+                "collection": "time_series",
+                "filter": query,
+            },
+        }
+        try:
+            response.update(forecast_next_close(points, window=window))
+        except ValueError as exc:
+            response["error"] = str(exc)
+        return serialize_mongo(response)
+
+    def get_analytics_spark_shape(
+        self,
+        asset_id: str,
+        data_source_id: str,
+        start_date: str | None = None,
+        end_date: str | None = None,
+    ) -> dict[str, Any]:
+        query: dict[str, Any] = {"assetId": asset_id, "dataSourceId": data_source_id}
+        timestamp_filter: dict[str, str] = {}
+        if start_date:
+            timestamp_filter["$gte"] = f"{start_date}T00:00:00Z"
+        if end_date:
+            timestamp_filter["$lte"] = f"{end_date}T23:59:59Z"
+        if timestamp_filter:
+            query["timestamp"] = timestamp_filter
+
+        points = list(self.db["time_series"].find(query).sort("timestamp", 1))
+        rows = flatten_time_series_rows(points)
+        return serialize_mongo(
+            {
+                "assetId": asset_id,
+                "dataSourceId": data_source_id,
+                "count": len(rows),
+                "rows": rows,
+                "provenance": {
+                    "endpoint": "GET /analytics/spark-shape",
+                    "collection": "time_series",
+                    "filter": query,
+                },
+            }
+        )
 
     def get_quality_freshness(
         self,

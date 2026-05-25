@@ -3,7 +3,7 @@
 ## Overall Status
 - [x] UC1: Data Ingest
 - [x] UC2: REST API for Data Access (Q1-Q5)
-- [ ] UC3: Analytics & Data Mining
+- [x] UC3: Analytics & Data Mining
 - [x] UC4: LLM-Powered Assistant (MCP)
 - [ ] Deliverables (report, IIAGen statement, demo video)
 
@@ -63,11 +63,33 @@
 
 ---
 
-## UC3 - Analytics (Pending)
+## UC3 - Analytics (Completed)
 - [x] Step 3: Data Quality & Governance prep
-- [ ] Min / Max / Average metrics on time-series
-- [ ] Basic trend forecasting
-- [ ] Ensure data shape is Spark-friendly
+- [x] Min / Max / Average metrics on time-series
+- [x] Basic trend forecasting
+- [x] Ensure data shape is Spark-friendly
+
+### What works
+- Added reusable analytics helpers in `src/analytics.py`:
+  - `summarize_time_series`
+  - `forecast_next_close`
+  - `flatten_time_series_rows`
+  - `build_time_series_query`
+- Added `GET /analytics/summary` with required `assetId` and `dataSourceId`, optional `startDate`/`endDate`, and deterministic min/max/average metrics from read-only `time_series` data.
+- Added `GET /analytics/forecast` with deterministic trend estimate based on average daily close change over the latest valid close values (default basis window up to 10 values).
+- Added `GET /analytics/spark-shape` returning flattened rows (`assetId`, `dataSourceId`, `timestamp`, `open`, `high`, `low`, `close`, `volume`) for Spark/DataFrame ingestion.
+- Added validation parity with `/time-series` for missing identifiers, invalid dates, and reversed date ranges.
+- Added assistant read-only analytics tools in `src/assistant/tools.py`:
+  - `get_analytics_summary`
+  - `get_analytics_forecast`
+- Extended assistant planning/composition in `src/assistant/service.py` so analytics summary and forecast questions route to analytics tools with grounded responses.
+
+### Verification
+- Added endpoint tests for UC3 summary/forecast/spark-shape happy paths, date filtering, validation errors, not-found behavior, and insufficient-close forecast behavior.
+- Added unit tests for analytics helper functions (`tests/test_analytics.py`).
+- Added assistant tests proving analytics summary/forecast questions route to analytics tools.
+- Latest run: `.venv/bin/python -m pytest` passed with 57 tests.
+- Latest run: `.venv/bin/python -m ruff check .` passed.
 
 ### Step 3 - Data Quality & Governance (Completed)
 - Added reusable data quality helpers in `quality.py`.

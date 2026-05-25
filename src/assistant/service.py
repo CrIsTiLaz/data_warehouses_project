@@ -173,6 +173,35 @@ class AssistantService:
             if data_source_id:
                 return [PlannedToolCall("get_data_source", {"source_id": data_source_id})]
             return [PlannedToolCall("list_data_sources", {})]
+        if self._is_analytics_summary_question(lower):
+            if asset_id and data_source_id:
+                return [
+                    PlannedToolCall(
+                        "get_analytics_summary",
+                        {
+                            "asset_id": asset_id,
+                            "data_source_id": data_source_id,
+                            "start_date": start_date,
+                            "end_date": end_date,
+                        },
+                    )
+                ]
+            return [PlannedToolCall("list_assets", {}), PlannedToolCall("list_data_sources", {})]
+        if self._is_forecast_question(lower):
+            if asset_id and data_source_id:
+                return [
+                    PlannedToolCall(
+                        "get_analytics_forecast",
+                        {
+                            "asset_id": asset_id,
+                            "data_source_id": data_source_id,
+                            "start_date": start_date,
+                            "end_date": end_date,
+                            "window": int(context.get("window", 10)),
+                        },
+                    )
+                ]
+            return [PlannedToolCall("list_assets", {}), PlannedToolCall("list_data_sources", {})]
         if self._is_time_series_question(lower):
             if asset_id and data_source_id:
                 return [
@@ -192,12 +221,30 @@ class AssistantService:
         return [PlannedToolCall("list_assets", {})]
 
     def _guardrail_plan(self, question: str, context: dict[str, Any]) -> list[PlannedToolCall] | None:
-        if not self._is_time_series_question(question.lower()):
+        lower = question.lower()
+        if not (
+            self._is_time_series_question(lower)
+            or self._is_analytics_summary_question(lower)
+            or self._is_forecast_question(lower)
+        ):
             return None
         return self._plan(question, context)
 
     def _is_time_series_question(self, lower_question: str) -> bool:
         return any(word in lower_question for word in ("price", "close", "time series", "historical", "rows"))
+
+    def _is_analytics_summary_question(self, lower_question: str) -> bool:
+        return (
+            "average" in lower_question
+            or "avg" in lower_question
+            or "minimum" in lower_question
+            or "maximum" in lower_question
+            or "min " in lower_question
+            or " max" in lower_question
+        )
+
+    def _is_forecast_question(self, lower_question: str) -> bool:
+        return any(word in lower_question for word in ("forecast", "trend", "next close", "prediction"))
 
     def _should_override_llm_tool_calls(
         self,
@@ -212,6 +259,10 @@ class AssistantService:
         }
         if guardrail_names == ["query_time_series"]:
             return "query_time_series" not in llm_names
+        if guardrail_names == ["get_analytics_summary"]:
+            return "get_analytics_summary" not in llm_names
+        if guardrail_names == ["get_analytics_forecast"]:
+            return "get_analytics_forecast" not in llm_names
         if guardrail_names == ["list_assets", "list_data_sources"]:
             return not {"list_assets", "list_data_sources"}.issubset(llm_names)
         return False
@@ -268,6 +319,72 @@ class AssistantService:
             if close is not None:
                 answer += f" The latest close is {close}."
             return AssistantQueryResponse(answer=answer, status="grounded", grounding=grounding)
+
+        if call.name == "get_analytics_summary":
+            count = int(result.get("count", 0))
+            if count == 0:
+                return AssistantQueryResponse(
+                    answer=(
+                        "No data found for "
+                        f"assetId={call.arguments.get('asset_id')} and "
+                        f"dataSourceId={call.arguments.get('data_source_id')}."
+                    ),
+                    status="insufficient_data",
+                    grounding=grounding,
+                )
+            close_summary = result.get("close")
+            if not isinstance(close_summary, dict):
+                return AssistantQueryResponse(
+                    answer="No valid close values were found for the requested analytics summary.",
+                    status="insufficient_data",
+                    grounding=grounding,
+                )
+            return AssistantQueryResponse(
+                answer=(
+                    f"Summary for {result.get('assetId')} from {result.get('dataSourceId')} "
+                    f"across {count} rows: close min={close_summary.get('min')}, "
+                    f"max={close_summary.get('max')}, average={close_summary.get('average')}."
+                ),
+                status="grounded",
+                grounding=grounding,
+            )
+
+        if call.name == "get_analytics_forecast":
+            count = int(result.get("count", 0))
+            if count == 0:
+                return AssistantQueryResponse(
+                    answer=(
+                        "No data found for "
+                        f"assetId={call.arguments.get('asset_id')} and "
+                        f"dataSourceId={call.arguments.get('data_source_id')}."
+                    ),
+                    status="insufficient_data",
+                    grounding=grounding,
+                )
+            if result.get("error"):
+                return AssistantQueryResponse(
+                    answer=str(result.get("error")),
+                    status="insufficient_data",
+                    grounding=grounding,
+                )
+            forecast = result.get("forecast")
+            if not isinstance(forecast, dict):
+                return AssistantQueryResponse(
+                    answer="Forecast output is unavailable for the requested selection.",
+                    status="insufficient_data",
+                    grounding=grounding,
+                )
+            return AssistantQueryResponse(
+                answer=(
+                    f"Trend forecast for {result.get('assetId')} from {result.get('dataSourceId')} "
+                    f"uses {result.get('basis')}. Latest close is {result.get('latestClose')} at "
+                    f"{result.get('latestTimestamp')} with average daily change "
+                    f"{result.get('averageDailyChange')}. Next period close estimate is "
+                    f"{forecast.get('nextPeriodClose')} ({forecast.get('direction')})."
+                ),
+                status="grounded",
+                grounding=grounding,
+            )
 
         if call.name in {"list_assets", "list_data_sources"}:
             key = "assetIds" if call.name == "list_assets" else "dataSourceIds"
