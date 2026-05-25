@@ -68,6 +68,8 @@
 - [x] Min / Max / Average metrics on time-series
 - [x] Basic trend forecasting
 - [x] Ensure data shape is Spark-friendly
+- [x] Apache Spark aggregation workflow
+- [x] Spark MLlib prediction workflow
 
 ### What works
 - Added reusable analytics helpers in `src/analytics.py`:
@@ -83,13 +85,27 @@
   - `get_analytics_summary`
   - `get_analytics_forecast`
 - Extended assistant planning/composition in `src/assistant/service.py` so analytics summary and forecast questions route to analytics tools with grounded responses.
+- Added PySpark workflows in `src/spark_analytics.py` and `src/spark_common.py`.
+- Added Spark CLI commands for:
+  - `export` (read-only MongoDB `time_series` -> flattened JSONL)
+  - `aggregate` (Spark DataFrame grouped metrics)
+  - `forecast` (Spark MLlib `LinearRegression` next-close prediction)
 
 ### Verification
 - Added endpoint tests for UC3 summary/forecast/spark-shape happy paths, date filtering, validation errors, not-found behavior, and insufficient-close forecast behavior.
 - Added unit tests for analytics helper functions (`tests/test_analytics.py`).
 - Added assistant tests proving analytics summary/forecast questions route to analytics tools.
-- Latest run: `.venv/bin/python -m pytest` passed with 57 tests.
+- Added helper tests for Spark workflow input/date/direction logic (`tests/test_spark_common.py`).
+- Latest run: `.venv/bin/python -m pytest` passed with 60 tests.
 - Latest run: `.venv/bin/python -m ruff check .` passed.
+
+### Spark Workflows
+- Spark aggregation implemented with PySpark DataFrames, `SparkSession`, and Spark SQL functions (`count`, `min`, `max`, `avg`) grouped by `assetId` and `dataSourceId`.
+- Spark ML workflow implemented with Spark MLlib `LinearRegression` using `VectorAssembler` over `timeIndex` to predict `close`.
+- Commands:
+  - `.venv/bin/python -m src.spark_analytics aggregate --input data/time_series_export.sample.jsonl --output data/spark_aggregations`
+  - `.venv/bin/python -m src.spark_analytics forecast --input data/time_series_export.sample.jsonl --asset-id TSLA --data-source-id alpha_vantage_api_v1`
+- Verification status: PySpark and NumPy installation completed; command execution currently blocked in this environment by missing Java runtime (`SparkSession` startup requires JRE/JDK).
 
 ### Step 3 - Data Quality & Governance (Completed)
 - Added reusable data quality helpers in `quality.py`.

@@ -1,0 +1,9 @@
+{"assetId":"TSLA","dataSourceId":"alpha_vantage_api_v1","timestamp":"2026-05-01T00:00:00Z","open":100.0,"high":102.0,"low":99.0,"close":101.0,"volume":1000000}
+{"assetId":"TSLA","dataSourceId":"alpha_vantage_api_v1","timestamp":"2026-05-02T00:00:00Z","open":101.0,"high":104.0,"low":100.0,"close":103.0,"volume":1050000}
+{"assetId":"TSLA","dataSourceId":"alpha_vantage_api_v1","timestamp":"2026-05-03T00:00:00Z","open":103.0,"high":105.0,"low":102.0,"close":104.0,"volume":1025000}
+{"assetId":"TSLA","dataSourceId":"alpha_vantage_api_v1","timestamp":"2026-05-04T00:00:00Z","open":104.0,"high":106.0,"low":101.5,"close":102.5,"volume":980000}
+{"assetId":"TSLA","dataSourceId":"alpha_vantage_api_v1","timestamp":"2026-05-05T00:00:00Z","open":102.5,"high":107.0,"low":102.0,"close":106.0,"volume":1100000}
+{"assetId":"TSLA","dataSourceId":"alpha_vantage_api_v1","timestamp":"2026-05-06T00:00:00Z","open":106.0,"high":109.0,"low":105.0,"close":108.0,"volume":1120000}
+{"assetId":"BTC","dataSourceId":"alpha_vantage_api_v1","timestamp":"2026-05-01T00:00:00Z","open":61000.0,"high":62000.0,"low":60500.0,"close":61500.0,"volume":25000}
+{"assetId":"BTC","dataSourceId":"alpha_vantage_api_v1","timestamp":"2026-05-02T00:00:00Z","open":61500.0,"high":62500.0,"low":61200.0,"close":62000.0,"volume":25500}
+{"assetId":"BTC","dataSourceId":"alpha_vantage_api_v1","timestamp":"2026-05-03T00:00:00Z","open":62000.0,"high":63000.0,"low":61800.0,"close":62800.0,"volume":26000}

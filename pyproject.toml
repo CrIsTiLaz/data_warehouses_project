@@ -6,6 +6,8 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi",
+    "numpy",
+    "pyspark",
     "pymongo",
     "python-dotenv",
     "requests",

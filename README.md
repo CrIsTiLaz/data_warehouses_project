@@ -218,6 +218,96 @@ Spark-shape example response:
 }
 ```
 
+## Spark Analytics and ML Workflow
+
+This project now includes explicit **Apache Spark** / **PySpark** workflows in addition to the REST analytics endpoints.
+
+- **Spark aggregation**: grouped metrics using Spark SQL DataFrames
+- **Spark MLlib**: **LinearRegression**-based next-close prediction
+- **ML workflow**: data load -> feature engineering -> model train -> metrics -> next prediction
+
+Implementation files:
+
+- `src/spark_analytics.py` (main CLI workflow)
+- `src/spark_common.py` (small reusable helpers)
+- `spark_analytics.py` (root wrapper)
+- `data/time_series_export.sample.jsonl` (small demo dataset)
+
+### Install dependencies
+
+```bash
+source .venv/bin/activate
+python -m pip install -e .
+```
+
+If needed, install Spark package directly:
+
+```bash
+python -m pip install pyspark
+```
+
+Spark runtime prerequisite:
+
+- Java Runtime (JRE/JDK) must be installed and available on `PATH` (or via `JAVA_HOME`) for local `SparkSession` startup.
+
+### Export time-series rows for Spark
+
+Export from MongoDB (read-only) to a flattened JSONL file:
+
+```bash
+.venv/bin/python -m src.spark_analytics export \
+  --output data/time_series_export.jsonl
+```
+
+Optional filters:
+
+```bash
+.venv/bin/python -m src.spark_analytics export \
+  --output data/time_series_export.tsla.jsonl \
+  --asset-id TSLA \
+  --data-source-id alpha_vantage_api_v1 \
+  --start-date 2026-01-01 \
+  --end-date 2026-05-08
+```
+
+### Run Spark aggregation
+
+```bash
+.venv/bin/python -m src.spark_analytics aggregate \
+  --input data/time_series_export.sample.jsonl \
+  --output data/spark_aggregations
+```
+
+The Spark aggregation output includes:
+
+- `count`
+- `startTimestamp`, `endTimestamp`
+- `closeMin`, `closeMax`, `closeAvg`
+- `openMin`, `openMax`, `openAvg`
+- `highMin`, `highMax`, `highAvg`
+- `lowMin`, `lowMax`, `lowAvg`
+- `volumeMin`, `volumeMax`, `volumeAvg`
+
+### Run Spark MLlib forecast
+
+```bash
+.venv/bin/python -m src.spark_analytics forecast \
+  --input data/time_series_export.sample.jsonl \
+  --asset-id TSLA \
+  --data-source-id alpha_vantage_api_v1
+```
+
+Forecast output contains:
+
+- model: `Spark MLlib LinearRegression`
+- training rows
+- coefficient/intercept
+- `rmse`, `r2`
+- latest close and predicted next close
+- direction (`up`, `down`, `flat`)
+
+Spark ML output is for demonstration and engineering validation only, not financial advice.
+
 ## LLM assistant via MCP (UC4)
 
 The assistant endpoint is implemented as a grounded, read-only orchestration layer over the DWH tools. It never writes to MongoDB and should not invent numeric values; numeric and temporal claims are formed from tool results and returned with grounding metadata.
