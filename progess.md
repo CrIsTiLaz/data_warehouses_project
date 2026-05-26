@@ -52,13 +52,12 @@
 - Stocks ingestion (Alpha Vantage): `TSLA`, `AMZN`.
 - Crypto ingestion (Alpha Vantage): `BTC`, `ETH`.
 - Metals ingestion (metals.dev): `XAG`, `XPT`.
-- Bond represented via seed/reference data: Romanian Government Bond (`ROS2CQA3C829`).
 - Data provenance tracked via `dataSourceId`.
 - Temporal asset versioning active (`version`, `valid_from`, `is_active`, `valid_to`).
 
 ### Current DB observations
 - `time_series`: populated (latest observed around 598 rows).
-- `assets`: multiple versions (historical + active), active rows observed: 7.
+- `assets`: multiple versions (historical + active), active rows observed: 6.
 - `data_sources`: contains provider records including `alpha_vantage_api_v1` and `metals_dev_v1`.
 
 ### Notes
@@ -91,7 +90,7 @@
 - Latest run: `.venv/bin/python -m ruff check .` passed.
 - Live API startup verified against MongoDB Atlas via `uvicorn`.
 - Live endpoint checks returned:
-  - `/assets`: `AMZN`, `BTC`, `ETH`, `ROS2CQA3C829`, `TSLA`, `XAG`, `XPT`
+  - `/assets`: `AMZN`, `BTC`, `ETH`, `TSLA`, `XAG`, `XPT`
   - `/assets/TSLA`: latest active TSLA metadata
   - `/data-sources`: registered source IDs including `alpha_vantage_api_v1` and `metals_dev_v1`
   - `/data-sources/alpha_vantage_api_v1`: Alpha Vantage provider details
